@@ -14,6 +14,9 @@ import '../services/places_service.dart';
 import '../services/routes_distance_service.dart';
 import '../services/secret_store.dart';
 import '../services/start_point.dart';
+import 'sync_provider.dart';
+
+export 'sync_provider.dart';
 
 const _uuid = Uuid();
 
@@ -57,7 +60,16 @@ class ApiKeyNotifier extends Notifier<String?> {
   @override
   String? build() => ref.read(secretStoreProvider).apiKey;
 
+  /// Saves a key the user typed on this device, and syncs it.
   Future<void> set(String? key) async {
+    await _store(key);
+    await ref.read(settingsProvider.notifier).stamp(SyncedField.apiKey);
+  }
+
+  /// Saves a key that arrived from the other device (no re-sync).
+  Future<void> setFromSync(String? key) => _store(key);
+
+  Future<void> _store(String? key) async {
     final store = ref.read(secretStoreProvider);
     await store.setApiKey(key);
     state = store.apiKey;
@@ -122,17 +134,32 @@ class SettingsNotifier extends Notifier<AppSettings> {
   @override
   AppSettings build() => ref.read(localStoreProvider).loadSettings();
 
-  Future<void> setHome(Place home) => _set(state.copyWith(home: home));
+  Future<void> setHome(Place home) =>
+      _change(SyncedField.home, state.copyWith(home: home));
 
-  Future<void> setNavApp(NavApp navApp) => _set(state.copyWith(navApp: navApp));
+  Future<void> setNavApp(NavApp navApp) =>
+      _change(SyncedField.navApp, state.copyWith(navApp: navApp));
 
-  Future<void> setRatePerMile(double? rate) => _set(
+  Future<void> setRatePerMile(double? rate) => _change(
+    SyncedField.ratePerMile,
     rate == null
         ? state.copyWith(clearRatePerMile: true)
         : state.copyWith(ratePerMile: rate),
   );
 
-  Future<void> _set(AppSettings next) async {
+  /// Marks [field] as just changed on this device (for settings kept
+  /// elsewhere, like the API key) and syncs.
+  Future<void> stamp(String field) => _change(field, state);
+
+  /// Replaces settings with ones merged from the other device (no re-sync).
+  Future<void> replaceFromSync(AppSettings merged) => _save(merged);
+
+  Future<void> _change(String field, AppSettings next) async {
+    await _save(next.stamped(field, ref.read(clockProvider)()));
+    ref.read(syncProvider.notifier).localChanged();
+  }
+
+  Future<void> _save(AppSettings next) async {
     state = next;
     await ref.read(localStoreProvider).saveSettings(next);
   }

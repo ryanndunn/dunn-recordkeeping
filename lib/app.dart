@@ -1,8 +1,10 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'features/addresses/addresses_screen.dart';
 import 'features/log_trip/log_trip_screen.dart';
 import 'features/settings/settings_screen.dart';
+import 'state/providers.dart';
 
 class MileageApp extends StatelessWidget {
   const MileageApp({super.key});
@@ -20,15 +22,33 @@ class MileageApp extends StatelessWidget {
   }
 }
 
-class HomeShell extends StatefulWidget {
+class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key});
 
   @override
-  State<HomeShell> createState() => _HomeShellState();
+  ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> {
+class _HomeShellState extends ConsumerState<HomeShell> {
   int _index = 0;
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    // Sign back in to Google (no UI) and pick up settings from the other
+    // device; sync again whenever the app comes back to the foreground.
+    Future.microtask(() => ref.read(syncProvider.notifier).restore());
+    _lifecycle = AppLifecycleListener(
+      onResume: () => ref.read(syncProvider.notifier).syncNow(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    super.dispose();
+  }
 
   static const _pages = [LogTripScreen(), AddressesScreen(), SettingsScreen()];
 

@@ -8,12 +8,25 @@ enum NavApp {
   final String label;
 }
 
+/// Setting names that sync between devices. The API key is stored
+/// separately (secure storage) but its change time is tracked here too.
+abstract final class SyncedField {
+  static const home = 'home';
+  static const navApp = 'navApp';
+  static const ratePerMile = 'ratePerMile';
+  static const spreadsheetId = 'spreadsheetId';
+  static const apiKey = 'apiKey';
+
+  static const all = [home, navApp, ratePerMile, spreadsheetId, apiKey];
+}
+
 class AppSettings {
   const AppSettings({
     this.home,
     this.navApp = NavApp.googleMaps,
     this.ratePerMile,
     this.spreadsheetId,
+    this.changedAt = const {},
   });
 
   /// Where the first trip of each day starts from.
@@ -28,24 +41,38 @@ class AppSettings {
   /// The Google Sheet the log is written to (Phase 3).
   final String? spreadsheetId;
 
+  /// When each [SyncedField] was last changed on this device (or arrived
+  /// from another). The newer change wins when devices sync.
+  final Map<String, DateTime> changedAt;
+
   AppSettings copyWith({
     Place? home,
     NavApp? navApp,
     double? ratePerMile,
     bool clearRatePerMile = false,
     String? spreadsheetId,
+    Map<String, DateTime>? changedAt,
   }) => AppSettings(
     home: home ?? this.home,
     navApp: navApp ?? this.navApp,
     ratePerMile: clearRatePerMile ? null : (ratePerMile ?? this.ratePerMile),
     spreadsheetId: spreadsheetId ?? this.spreadsheetId,
+    changedAt: changedAt ?? this.changedAt,
   );
+
+  /// Same settings with [field] marked as changed at [when].
+  AppSettings stamped(String field, DateTime when) =>
+      copyWith(changedAt: {...changedAt, field: when.toUtc()});
 
   Map<String, dynamic> toJson() => {
     if (home != null) 'home': home!.toJson(),
     'navApp': navApp.name,
     if (ratePerMile != null) 'ratePerMile': ratePerMile,
     if (spreadsheetId != null) 'spreadsheetId': spreadsheetId,
+    if (changedAt.isNotEmpty)
+      'changedAt': {
+        for (final e in changedAt.entries) e.key: e.value.toIso8601String(),
+      },
   };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -58,5 +85,10 @@ class AppSettings {
     ),
     ratePerMile: (json['ratePerMile'] as num?)?.toDouble(),
     spreadsheetId: json['spreadsheetId'] as String?,
+    changedAt: {
+      for (final e
+          in ((json['changedAt'] as Map<String, dynamic>?) ?? const {}).entries)
+        e.key: DateTime.parse(e.value as String),
+    },
   );
 }

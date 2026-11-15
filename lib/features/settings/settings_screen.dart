@@ -71,15 +71,7 @@ class SettingsScreen extends ConsumerWidget {
           child: ListView(
             children: [
               section('Google account'),
-              const ListTile(
-                enabled: false,
-                leading: Icon(Icons.account_circle_outlined),
-                title: Text('Sign in with Google'),
-                subtitle: Text(
-                  'Chooses which Google account holds your mileage '
-                  'spreadsheet. Coming in the next build.',
-                ),
-              ),
+              const _GoogleAccountSection(),
               section('Starting point'),
               ListTile(
                 leading: home == null || home.isVerified
@@ -153,6 +145,108 @@ class SettingsScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+}
+
+/// Sign-in status and sync controls.
+class _GoogleAccountSection extends ConsumerWidget {
+  const _GoogleAccountSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sync = ref.watch(syncProvider);
+    final notifier = ref.read(syncProvider.notifier);
+    final scheme = Theme.of(context).colorScheme;
+
+    String syncedText() {
+      final at = sync.lastSynced;
+      if (at == null) return 'Not synced yet';
+      return 'Synced at ${TimeOfDay.fromDateTime(at).format(context)}';
+    }
+
+    switch (sync.phase) {
+      case SyncPhase.unavailable:
+        return const ListTile(
+          enabled: false,
+          leading: Icon(Icons.account_circle_outlined),
+          title: Text('Sign in with Google'),
+          subtitle: Text(
+            'Not set up in this build (Google client IDs missing).',
+          ),
+        );
+      case SyncPhase.signedOut:
+        return Column(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.account_circle_outlined),
+              title: const Text('Sign in with Google'),
+              subtitle: const Text(
+                'Keeps your API key and settings the same on your phone '
+                'and Mac.',
+              ),
+              trailing: FilledButton(
+                onPressed: notifier.signIn,
+                child: const Text('Sign in'),
+              ),
+            ),
+            if (sync.message != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(72, 0, 16, 8),
+                child: Text(sync.message!),
+              ),
+          ],
+        );
+      case SyncPhase.working:
+        return ListTile(
+          leading: const SizedBox.square(
+            dimension: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          title: Text(sync.email ?? 'Google account'),
+          subtitle: Text(sync.message ?? 'Syncing…'),
+        );
+      case SyncPhase.ready:
+      case SyncPhase.error:
+        final failed = sync.phase == SyncPhase.error;
+        if (!sync.signedIn && failed) {
+          return ListTile(
+            leading: Icon(Icons.error_outline, color: scheme.error),
+            title: const Text('Sign-in didn\'t work'),
+            subtitle: Text(sync.message ?? ''),
+            trailing: FilledButton(
+              onPressed: notifier.signIn,
+              child: const Text('Try again'),
+            ),
+          );
+        }
+        return Column(
+          children: [
+            ListTile(
+              leading: Icon(
+                failed ? Icons.sync_problem : Icons.cloud_done_outlined,
+                color: failed ? scheme.error : scheme.primary,
+              ),
+              title: Text(sync.email ?? 'Signed in'),
+              subtitle: Text(failed ? (sync.message ?? '') : syncedText()),
+              trailing: IconButton(
+                tooltip: 'Sync now',
+                icon: const Icon(Icons.sync),
+                onPressed: notifier.syncNow,
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: TextButton(
+                  onPressed: notifier.signOut,
+                  child: const Text('Sign out'),
+                ),
+              ),
+            ),
+          ],
+        );
+    }
   }
 }
 

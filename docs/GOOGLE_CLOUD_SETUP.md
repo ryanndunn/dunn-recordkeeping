@@ -35,12 +35,18 @@ App identifiers used below:
 1. App name `Mileage Log`, user support email = your email.
 2. Audience: **External** for a personal Gmail account. Choose **Internal** if your
    Google account is in a Google Workspace organization.
-3. Data access / scopes: add `.../auth/drive.file`. That is the only scope
-   the app uses, and it can only see files the app created itself.
+3. Data access / scopes: add both of these (Google lists both as
+   non-sensitive):
+   - `.../auth/drive.file`: only files the app created itself (the
+     mileage spreadsheet).
+   - `.../auth/drive.appdata`: the app's own hidden settings folder in your
+     Drive, used to keep the API key and settings the same on phone and Mac.
 4. Test users: add your own email address.
-5. After the app works, click **Publish app**. Because `drive.file` is a
-   non-sensitive scope, Google does not review it, and publishing stops the
-   weekly "sign in again" prompts that apps left in testing mode get.
+5. After signing in from the app works, go to **Audience → Publish app**.
+   Apps left in testing mode make you sign in again about every 7 days.
+   Personal apps with fewer than 100 users don't need Google's review; when
+   you sign in you may see "Google hasn't verified this app". Click
+   **Advanced → Go to Mileage Log** to continue.
 
 ## 4. OAuth client IDs
 
@@ -54,18 +60,47 @@ App identifiers used below:
   then copy the `SHA1:` line:
 
 ```bash
-keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android
+"/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/keytool" -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android
 ```
+
+  The file `~/.android/debug.keystore` only exists after the app has been
+  built for Android once (`flutter build apk --debug`).
 
   When you make a release build later (Phase 5), add a second Android client
   using the release keystore's SHA-1.
 
-### macOS
+### Web application (needed by Android sign-in)
 
-- Application type: **iOS** (Google uses the iOS client type for macOS apps)
-- Bundle ID: `com.dunnrecordkeeping.mileageLog`
-- After it's created, note the **Client ID** and the **iOS URL scheme**
-  (`com.googleusercontent.apps.…`). Phase 3 puts both into the macOS app.
+Android's sign-in system needs a "web" client ID too, even though there is
+no website.
+
+- Application type: **Web application**
+- Name: `Mileage Log Android server`
+- Leave the JavaScript origins and redirect URIs empty, then **Create**.
+- Copy the **Client ID**.
+
+### Desktop app (Mac sign-in)
+
+The Mac app signs in through your web browser.
+
+- Application type: **Desktop app**
+- Name: `Mileage Log Mac`
+- **Create**, then copy the **Client ID** and **Client secret** (or download
+  the JSON).
+
+An earlier version of this guide said to make an **iOS** client for the Mac.
+The app doesn't use it, so you can delete it or leave it.
+
+### Put the IDs in the app's build config
+
+Copy `config/google_oauth.example.json` to `config/google_oauth.json` and
+fill in the three values. That file is excluded from git. Builds read it with:
+
+```bash
+flutter run --dart-define-from-file=config/google_oauth.json
+```
+
+Without it the app still runs, with Google sign-in turned off.
 
 ## 5. API key for Routes and Places
 
