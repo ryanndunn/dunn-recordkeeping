@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mileage Log</title>
+  <meta name="description" content="A personal app for recording miles driven to appointments.">
+  <style>
+    :root { --bg: #f7f9f4; --fg: #1b1f1a; --muted: #4f574d; --accent: #2e7d32; --card: #ffffff; --line: #dfe5da; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #121511; --fg: #e3e8df; --muted: #a9b2a5; --accent: #81c784; --card: #1b1f1a; --line: #2c3329; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 680px; margin: 0 auto; padding: 48px 16px 64px; }
+    h1 { font-size: 2rem; margin: 0 0 4px; }
+    .tag { color: var(--muted); margin: 0 0 32px; }
+    h2 { font-size: 1.15rem; margin: 32px 0 8px; }
+    a { color: var(--accent); }
+    ul { padding-left: 1.2em; }
+    footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Mileage Log</h1>
+  <p class="tag">A personal app for recording miles driven to appointments, on Android and macOS.</p>
+
+  <h2>What it does</h2>
+  <ul>
+    <li>Pick where you're going from your saved places or a Google Maps address search.</li>
+    <li>The trip starts from your last stop that day, or from home, and records the driving distance from Google Maps.</li>
+    <li>Your saved places, settings and (soon) a mileage spreadsheet stay in your own Google account and on your own devices.</li>
+  </ul>
+
+  <h2>Who it's for</h2>
+  <p>Mileage Log is a personal project built for one person's record keeping. It is not sold or offered as a service.</p>
+
+  <h2>Privacy</h2>
+  <p>Read the <a href="privacy.html">privacy policy</a> to see what the app accesses and where your information is kept.</p>
+
+  <footer>
+    Source code: <a href="https://github.com/ryanndunn/dunn-recordkeeping">github.com/ryanndunn/dunn-recordkeeping</a>
+  </footer>
+</main>
+</body>
+</html>
