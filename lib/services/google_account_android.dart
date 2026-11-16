@@ -1,14 +1,22 @@
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:google_sign_in_platform_interface/google_sign_in_platform_interface.dart';
 import 'package:http/http.dart' as http;
 
 import 'google_account.dart';
 
 /// Android: Google's sign-in package (system account picker).
 class AndroidGoogleAccountService implements GoogleAccountService {
-  AndroidGoogleAccountService({required this.serverClientId});
+  AndroidGoogleAccountService({
+    required this.serverClientId,
+    required this.rememberedEmail,
+  });
 
   /// The "Web application" OAuth client ID (Android's sign-in needs one).
   final String serverClientId;
+
+  /// The account signed in last time (cleared on sign-out), used when the
+  /// quick sign-in can't find it, e.g. after an app update.
+  final String? Function() rememberedEmail;
 
   final _signIn = GoogleSignIn.instance;
   Future<void>? _initialized;
@@ -21,15 +29,55 @@ class AndroidGoogleAccountService implements GoogleAccountService {
     try {
       await _init();
       final account = await _signIn.attemptLightweightAuthentication();
-      if (account == null) return null;
-      final auth = await account.authorizationClient.authorizationForScopes(
-        googleScopes,
-      );
-      if (auth == null) return null;
-      return _session(account);
+      if (account != null) {
+        final auth = await account.authorizationClient.authorizationForScopes(
+          googleScopes,
+        );
+        if (auth != null) return _session(account);
+      }
+    } on GoogleSignInException {
+      // Fall through to the remembered account.
+    }
+    return _restoreRemembered();
+  }
+
+  /// Asks Android for a token for the remembered account, with no screen.
+  /// Works as long as the user hasn't removed the app's Google access.
+  Future<GoogleSession?> _restoreRemembered() async {
+    final email = rememberedEmail();
+    if (email == null) return null;
+    Future<String?> token() async {
+      final tokens = await GoogleSignInPlatform.instance
+          .clientAuthorizationTokensForScopes(
+            ClientAuthorizationTokensForScopesParameters(
+              request: AuthorizationRequestDetails(
+                scopes: googleScopes,
+                userId: null,
+                email: email,
+                promptIfUnauthorized: false,
+              ),
+            ),
+          );
+      return tokens?.accessToken;
+    }
+
+    try {
+      if (await token() == null) return null;
     } on GoogleSignInException {
       return null;
     }
+    return GoogleSession(
+      email: email,
+      client: _TokenClient(() async {
+        final t = await token();
+        if (t == null) {
+          throw const GoogleAccountException(
+            'Google access was removed. Sign in again in Settings.',
+          );
+        }
+        return t;
+      }),
+    );
   }
 
   @override

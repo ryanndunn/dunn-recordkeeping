@@ -1,3 +1,4 @@
+import 'address_matcher.dart';
 import '../models/place.dart';
 import '../models/trip.dart';
 
@@ -24,4 +25,12 @@ bool isSameDay(DateTime a, DateTime b) {
   final la = a.toLocal();
   final lb = b.toLocal();
   return la.year == lb.year && la.month == lb.month && la.day == lb.day;
+}
+
+/// Same location: same Google place ID, or the same address written
+/// differently.
+bool isSamePlace(Place a, Place b) {
+  if (a.placeId != null && a.placeId == b.placeId) return true;
+  return AddressMatcher.normalize(a.address) ==
+      AddressMatcher.normalize(b.address);
 }

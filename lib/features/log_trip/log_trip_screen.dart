@@ -8,6 +8,7 @@ import '../../services/address_matcher.dart';
 import '../../services/distance_service.dart';
 import '../../state/providers.dart';
 import '../../widgets/address_search_field.dart';
+import '../../widgets/client_dialog.dart';
 import '../../widgets/place_dialog.dart';
 
 class LogTripScreen extends ConsumerStatefulWidget {
@@ -68,7 +69,7 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
     final choice = await showDialog<_UnmatchedChoice>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Not in your saved addresses'),
+        title: const Text('Not one of your clients'),
         content: Text('${place.label}\n${place.address}'),
         actions: [
           TextButton(
@@ -82,7 +83,7 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
           FilledButton(
             onPressed: () =>
                 Navigator.pop(context, _UnmatchedChoice.saveAndLog),
-            child: const Text('Save & log'),
+            child: const Text('Add client & log'),
           ),
         ],
       ),
@@ -93,17 +94,21 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
       case _UnmatchedChoice.logOnce:
         await _logTo(place);
       case _UnmatchedChoice.saveAndLog:
-        final input = await showPlaceDialog(
+        final input = await showClientDialog(
           context,
-          title: 'Save address',
-          initialName: place.label,
+          title: 'New client',
           initialPlace: place,
           saveLabel: 'Save & log',
         );
         if (!mounted || input == null) return;
         final created = await ref
             .read(addressesProvider.notifier)
-            .add(name: input.name, place: input.place);
+            .add(
+              name: input.name,
+              place: input.place,
+              email: input.email,
+              phone: input.phone,
+            );
         await _logTo(created.toPlace());
     }
   }
@@ -141,7 +146,7 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
               ),
             for (final a in saved)
               ListTile(
-                leading: const Icon(Icons.bookmark_outline),
+                leading: const Icon(Icons.person_outline),
                 title: Text(a.name),
                 subtitle: Text(a.address),
                 onTap: () => Navigator.pop(context, a.toPlace()),
@@ -217,6 +222,11 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
     final isDemo = ref.watch(distanceServiceProvider).isDemo;
     final totalToday = today.fold<double>(0, (sum, t) => sum + t.miles);
     final atHome = home != null && start == home;
+    // Only meaningful once signed in; before that nothing uploads.
+    final signedIn = ref.watch(syncProvider.select((s) => s.signedIn));
+    final waitingUpload = signedIn
+        ? ref.watch(tripsProvider).where((t) => !t.synced).length
+        : 0;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Log Trip')),
@@ -288,6 +298,29 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
                 ],
               ),
               const Divider(),
+              if (waitingUpload > 0)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.cloud_upload_outlined,
+                        size: 18,
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          waitingUpload == 1
+                              ? '1 trip waiting to upload to your spreadsheet'
+                              : '$waitingUpload trips waiting to upload to '
+                                    'your spreadsheet',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               if (today.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 24),

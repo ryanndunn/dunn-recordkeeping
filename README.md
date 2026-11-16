@@ -1,4 +1,4 @@
-# Mileage Log
+# Dunn Record Keeping
 
 Logs the miles driven to appointments. Pick or type where you're going. If it
 matches a saved address, the trip is logged with its driving distance. Runs
@@ -58,7 +58,7 @@ and macOS are the real targets.
 - `lib/services/`: address matching, start-point rule, distance (demo),
   on-device storage
 - `lib/state/providers.dart`: app state (Riverpod)
-- `lib/features/`: Log Trip, Addresses, Settings screens
+- `lib/features/`: Log Trip, Clients, Settings screens
 
 Flutter 3.50 note: Material widgets come from
 `package:material_ui/material_ui.dart`. The old `package:flutter/material.dart`

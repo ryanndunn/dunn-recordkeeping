@@ -8,6 +8,7 @@ import '../config/oauth_config.dart';
 import '../services/google_account.dart';
 import '../services/google_account_android.dart';
 import '../services/google_account_desktop.dart';
+import '../services/mileage_sheet.dart';
 import '../services/settings_sync.dart';
 import 'providers.dart';
 
@@ -18,6 +19,7 @@ final googleAccountServiceProvider = Provider<GoogleAccountService?>((ref) {
   if (Platform.isAndroid && OAuthConfig.androidConfigured) {
     return AndroidGoogleAccountService(
       serverClientId: OAuthConfig.androidServerClientId,
+      rememberedEmail: () => ref.read(localStoreProvider).googleEmail,
     );
   }
   if (Platform.isMacOS && OAuthConfig.desktopConfigured) {
@@ -35,6 +37,13 @@ final settingsRemoteFactoryProvider =
     Provider<SettingsRemote Function(GoogleSession)>(
       (ref) =>
           (session) => DriveSettingsRemote(session.client),
+    );
+
+/// The mileage spreadsheet for a signed-in account.
+final mileageSheetFactoryProvider =
+    Provider<MileageSheet Function(GoogleSession)>(
+      (ref) =>
+          (session) => GoogleMileageSheet(session.client),
     );
 
 enum SyncPhase {
@@ -61,7 +70,7 @@ final syncProvider = NotifierProvider<SyncNotifier, SyncState>(
   SyncNotifier.new,
 );
 
-/// Signs in to Google and keeps settings (including the API key) the same
+/// Signs in to Google and keeps settings (including the API key) and clients the same
 /// on every device signed in to the same account.
 class SyncNotifier extends Notifier<SyncState> {
   GoogleSession? _session;
@@ -112,6 +121,7 @@ class SyncNotifier extends Notifier<SyncState> {
     } catch (_) {
       // Signed out locally either way.
     }
+    await ref.read(localStoreProvider).setGoogleEmail(null);
     state = const SyncState(SyncPhase.signedOut);
   }
 
@@ -139,8 +149,9 @@ class SyncNotifier extends Notifier<SyncState> {
     try {
       session.email ??= await _remote!.accountEmail();
     } catch (_) {
-      // Email is only for display.
+      // Email is for display and background uploads; not required.
     }
+    await ref.read(localStoreProvider).setGoogleEmail(session.email);
     await syncNow();
   }
 
@@ -163,9 +174,9 @@ class SyncNotifier extends Notifier<SyncState> {
     try {
       final settings = ref.read(settingsProvider);
       final apiKey = ref.read(apiKeyProvider);
-      final local = docFromLocal(settings, apiKey);
+      final local = _localDoc();
       final theirs = await remote.read();
-      final merged = mergeDocs(local, theirs ?? const {});
+      final merged = dedupeClients(mergeDocs(local, theirs ?? const {}));
 
       if (!docsEqual(merged, local)) {
         final applied = applyDoc(merged, settings, apiKey);
@@ -175,14 +186,40 @@ class SyncNotifier extends Notifier<SyncState> {
         if (applied.apiKeyChanged) {
           await ref.read(apiKeyProvider.notifier).setFromSync(applied.apiKey);
         }
+        // Merge again with the current list, in case a client was added
+        // or edited here while the file was downloading.
+        final now = clientsFromDoc(
+          mergeDocs(_localClientDoc(), clientEntries(merged)),
+        );
+        await ref
+            .read(addressesProvider.notifier)
+            .replaceFromSync(now.clients, now.deletions);
       }
-      if (theirs == null || !docsEqual(merged, theirs)) {
-        await remote.write(merged);
+
+      // Spreadsheet: create it if neither device has, then upload trips.
+      // A failure here is reported but doesn't stop settings syncing.
+      String? sheetError;
+      try {
+        await _syncTrips();
+      } on SheetException catch (e) {
+        sheetError = e.message;
+      }
+
+      // Push settings (including a just-created spreadsheet's ID) and
+      // clients.
+      final toWrite = dedupeClients(mergeDocs(_localDoc(), theirs ?? const {}));
+      if (theirs == null || !docsEqual(toWrite, theirs)) {
+        await remote.write(toWrite);
       }
       state = SyncState(
-        SyncPhase.ready,
+        sheetError == null ? SyncPhase.ready : SyncPhase.error,
         email: email,
-        lastSynced: ref.read(clockProvider)(),
+        lastSynced: sheetError == null
+            ? ref.read(clockProvider)()
+            : state.lastSynced,
+        message: sheetError == null
+            ? null
+            : 'Trips not uploaded yet: $sheetError',
       );
     } catch (e) {
       state = SyncState(
@@ -191,6 +228,67 @@ class SyncNotifier extends Notifier<SyncState> {
         lastSynced: state.lastSynced,
         message: 'Couldn\'t sync settings: $e',
       );
+    }
+  }
+
+  /// Everything this device syncs: settings, API key and clients.
+  SyncDoc _localDoc() => {
+    ...docFromLocal(ref.read(settingsProvider), ref.read(apiKeyProvider)),
+    ..._localClientDoc(),
+  };
+
+  SyncDoc _localClientDoc() => clientDocFromLocal(
+    ref.read(addressesProvider),
+    ref.read(localStoreProvider).loadClientDeletions(),
+  );
+
+  Future<void> _syncTrips({bool retried = false}) async {
+    final session = _session;
+    if (session == null) return;
+    final sheet = ref.read(mileageSheetFactoryProvider)(session);
+    final settings = ref.read(settingsProvider.notifier);
+    final trips = ref.read(tripsProvider.notifier);
+    final store = ref.read(localStoreProvider);
+
+    final String id;
+    final existing = ref.read(settingsProvider).spreadsheetId;
+    if (existing != null) {
+      id = existing;
+    } else {
+      id = await sheet.create(
+        ratePerMile: ref.read(settingsProvider).ratePerMile,
+      );
+      await settings.setSpreadsheetId(id);
+    }
+
+    try {
+      final deletes = store.loadPendingDeletes();
+      if (deletes.isNotEmpty) {
+        await sheet.deleteTrips(id, deletes);
+        // Keep any deletes that were added while this one ran.
+        await store.savePendingDeletes(
+          store.loadPendingDeletes().difference(deletes),
+        );
+      }
+      final waiting = [
+        for (final t in ref.read(tripsProvider))
+          if (!t.synced) t,
+      ];
+      if (waiting.isNotEmpty) {
+        await sheet.addTrips(id, waiting);
+        await trips.markSynced({for (final t in waiting) t.id});
+      }
+    } on SheetException catch (e) {
+      if (!e.missing || retried) rethrow;
+      // The spreadsheet was deleted: start a new one with this device's
+      // trips. (The other device adds its own when it next syncs.)
+      final fresh = await sheet.create(
+        ratePerMile: ref.read(settingsProvider).ratePerMile,
+      );
+      await settings.setSpreadsheetId(fresh);
+      await store.savePendingDeletes(const {});
+      await trips.markAllUnsynced();
+      await _syncTrips(retried: true);
     }
   }
 }

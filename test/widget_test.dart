@@ -90,8 +90,12 @@ Future<void> pumpApp(
 }
 
 /// Types into the address box and waits out the search debounce.
-Future<void> search(WidgetTester tester, String text) async {
-  await tester.enterText(find.byType(TextField).first, text);
+Future<void> search(WidgetTester tester, String text) =>
+    searchIn(tester, find.byType(TextField).first, text);
+
+/// Types into [field] and waits out the search debounce.
+Future<void> searchIn(WidgetTester tester, Finder field, String text) async {
+  await tester.enterText(field, text);
   await tester.pump(const Duration(milliseconds: 350));
   await tester.pumpAndSettle();
 }
@@ -141,7 +145,7 @@ void main() {
     expect(find.text('Powered by Google'), findsOneWidget);
     await tester.tap(find.text('9 Elm St'));
     await tester.pumpAndSettle();
-    expect(find.text('Not in your saved addresses'), findsOneWidget);
+    expect(find.text('Not one of your clients'), findsOneWidget);
 
     await tester.tap(find.text('Log once'));
     await tester.pumpAndSettle();
@@ -154,11 +158,11 @@ void main() {
     await search(tester, 'elm');
     await tester.tap(find.text('9 Elm St'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Save & log'));
+    await tester.tap(find.text('Add client & log'));
     await tester.pumpAndSettle();
 
-    // Name dialog is prefilled with Google's name and verified address.
-    expect(find.text('Save address'), findsOneWidget);
+    // Client dialog is prefilled with Google's name and verified address.
+    expect(find.text('New client'), findsOneWidget);
     expect(find.text(_elm.address), findsWidgets);
     await tester.enterText(
       find.widgetWithText(TextField, 'Name'),
@@ -169,7 +173,7 @@ void main() {
 
     expect(find.text('Home → Peoria Office'), findsOneWidget);
 
-    await tester.tap(find.text('Addresses'));
+    await tester.tap(find.text('Clients'));
     await tester.pumpAndSettle();
     expect(find.text('Peoria Office'), findsOneWidget);
   });
@@ -198,12 +202,10 @@ void main() {
     expect(find.textContaining('→'), findsNothing);
   });
 
-  testWidgets('without an API key only saved addresses are offered', (
-    tester,
-  ) async {
+  testWidgets('without an API key only clients are offered', (tester) async {
     await pumpApp(tester, _savedPrefs, withGoogle: false);
 
-    expect(find.textContaining('Saved addresses only'), findsOneWidget);
+    expect(find.textContaining('Clients only'), findsOneWidget);
     await search(tester, 'elm');
     expect(find.text('9 Elm St'), findsNothing);
 
@@ -213,18 +215,18 @@ void main() {
     expect(find.text('Home → Clinic'), findsOneWidget);
   });
 
-  testWidgets('new saved address must be picked from Google', (tester) async {
+  testWidgets('new client address must be picked from Google', (tester) async {
     await pumpApp(tester, _savedPrefs);
-    await tester.tap(find.text('Addresses'));
+    await tester.tap(find.text('Clients'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Add address'));
+    await tester.tap(find.text('Add client'));
     await tester.pumpAndSettle();
 
     FilledButton saveButton() =>
         tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Save'));
     expect(saveButton().onPressed, isNull);
 
-    await search(tester, 'elm');
+    await searchIn(tester, find.widgetWithText(TextField, 'Address'), 'elm');
     await tester.tap(find.text('9 Elm St'));
     await tester.pumpAndSettle();
 
@@ -286,8 +288,55 @@ void main() {
         {'id': 'x', 'name': 'Old', 'address': '5 Typed St'},
       ]),
     });
-    await tester.tap(find.text('Addresses'));
+    await tester.tap(find.text('Clients'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Not verified'), findsOneWidget);
+    expect(find.textContaining('not verified'), findsOneWidget);
+  });
+
+  testWidgets('a client keeps a phone number and email', (tester) async {
+    await pumpApp(tester, _savedPrefs);
+    await tester.tap(find.text('Clients'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add client'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Name'),
+      'Jane Smith',
+    );
+    await searchIn(tester, find.widgetWithText(TextField, 'Address'), 'elm');
+    await tester.tap(find.text('9 Elm St'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Phone (optional)'),
+      '(309) 555-0142',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Email (optional)'),
+      'jane.example.com',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Check the email address'), findsOneWidget);
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Email (optional)'),
+      'jane@example.com',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Jane Smith'), findsOneWidget);
+    expect(find.textContaining('(309) 555-0142 · jane@example.com'), findsOne);
+    expect(find.byTooltip('Call Jane Smith'), findsOneWidget);
+    expect(find.byTooltip('Email Jane Smith'), findsOneWidget);
+    // Clients without contact details show no call or email buttons.
+    expect(find.byTooltip('Call Clinic'), findsNothing);
+
+    // Editing keeps the details.
+    await tester.tap(find.text('Jane Smith'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(TextField, 'jane@example.com'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '(309) 555-0142'), findsOneWidget);
   });
 }

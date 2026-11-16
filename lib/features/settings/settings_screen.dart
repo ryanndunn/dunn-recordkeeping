@@ -1,7 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-import '../../models/app_settings.dart';
 import '../../state/providers.dart';
 import '../../widgets/place_dialog.dart';
 
@@ -70,6 +70,10 @@ class SettingsScreen extends ConsumerWidget {
           constraints: const BoxConstraints(maxWidth: 640),
           child: ListView(
             children: [
+              if (ref.watch(autoTripProvider).supported) ...[
+                section('Automatic trips'),
+                const _AutoTripsSection(),
+              ],
               section('Google account'),
               const _GoogleAccountSection(),
               section('Starting point'),
@@ -92,26 +96,6 @@ class SettingsScreen extends ConsumerWidget {
                 isThreeLine: home != null && !home.isVerified,
                 trailing: const Icon(Icons.edit_outlined),
                 onTap: () => _editHome(context, ref),
-              ),
-              section('Navigation app'),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: SegmentedButton<NavApp>(
-                  segments: [
-                    for (final app in NavApp.values)
-                      ButtonSegment(value: app, label: Text(app.label)),
-                  ],
-                  selected: {settings.navApp},
-                  onSelectionChanged: (s) =>
-                      ref.read(settingsProvider.notifier).setNavApp(s.first),
-                ),
-              ),
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
-                child: Text(
-                  'Opens with whatever account is signed in to that app on '
-                  'this device.',
-                ),
               ),
               section('Mileage rate'),
               ListTile(
@@ -148,6 +132,90 @@ class SettingsScreen extends ConsumerWidget {
   }
 }
 
+/// Turns arrival detection on/off and explains what it needs.
+class _AutoTripsSection extends ConsumerWidget {
+  const _AutoTripsSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final auto = ref.watch(autoTripProvider);
+    final notifier = ref.read(autoTripProvider.notifier);
+    final scheme = Theme.of(context).colorScheme;
+
+    final String status;
+    if (!auto.enabled) {
+      status =
+          'Off. When on, arriving at a client\'s address (or home after '
+          'appointments) and staying 5 minutes logs the trip, even with the '
+          'app closed. Works with Google Maps, Waze, or no navigation app.';
+    } else if (!auto.permissionOk) {
+      status =
+          'Paused: location is not set to "Allow all the time". Tap to fix.';
+    } else {
+      status =
+          'Watching ${auto.watching} '
+          '${auto.watching == 1 ? 'place' : 'places'}. Trips are logged when '
+          'you arrive and stay 5 minutes, whether you drove with Google '
+          'Maps, Waze, or neither.';
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SwitchListTile(
+          secondary: Icon(
+            auto.enabled && auto.permissionOk
+                ? Icons.share_location
+                : Icons.location_off_outlined,
+            color: auto.enabled && !auto.permissionOk ? scheme.error : null,
+          ),
+          title: const Text('Log trips automatically'),
+          subtitle: Text(status),
+          isThreeLine: true,
+          value: auto.enabled,
+          onChanged: (on) => on ? notifier.enable() : notifier.disable(),
+        ),
+        if (auto.enabled && !auto.permissionOk)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(72, 0, 16, 8),
+            child: FilledButton(
+              onPressed: notifier.enable,
+              child: const Text('Allow location all the time'),
+            ),
+          ),
+        if (auto.enabled && auto.skipped > 0)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(72, 0, 16, 8),
+            child: Text(
+              '${auto.skipped} saved '
+              '${auto.skipped == 1 ? 'place isn\'t' : 'places aren\'t'} '
+              'watched because '
+              '${auto.skipped == 1 ? 'it wasn\'t' : 'they weren\'t'} picked '
+              'from Google Maps. Re-pick '
+              '${auto.skipped == 1 ? 'it' : 'them'} to include '
+              '${auto.skipped == 1 ? 'it' : 'them'}.',
+              style: TextStyle(color: scheme.error),
+            ),
+          ),
+        if (auto.message != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(72, 0, 16, 8),
+            child: Text(auto.message!, style: TextStyle(color: scheme.error)),
+          ),
+        if (auto.enabled)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(72, 0, 16, 8),
+            child: Text(
+              'Samsung phones: also add Dunn Record Keeping under Settings → Battery '
+              '→ Background usage limits → Never sleeping apps, so arrivals '
+              'aren\'t delayed.',
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 /// Sign-in status and sync controls.
 class _GoogleAccountSection extends ConsumerWidget {
   const _GoogleAccountSection();
@@ -156,6 +224,9 @@ class _GoogleAccountSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final sync = ref.watch(syncProvider);
     final notifier = ref.read(syncProvider.notifier);
+    final spreadsheetId = ref.watch(
+      settingsProvider.select((s) => s.spreadsheetId),
+    );
     final scheme = Theme.of(context).colorScheme;
 
     String syncedText() {
@@ -181,8 +252,8 @@ class _GoogleAccountSection extends ConsumerWidget {
               leading: const Icon(Icons.account_circle_outlined),
               title: const Text('Sign in with Google'),
               subtitle: const Text(
-                'Keeps your API key and settings the same on your phone '
-                'and Mac.',
+                'Keeps your clients, settings and API key the same on your '
+                'phone and Mac, and uploads trips to your spreadsheet.',
               ),
               trailing: FilledButton(
                 onPressed: notifier.signIn,
@@ -234,14 +305,26 @@ class _GoogleAccountSection extends ConsumerWidget {
                 onPressed: notifier.syncNow,
               ),
             ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: TextButton(
-                  onPressed: notifier.signOut,
-                  child: const Text('Sign out'),
-                ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                children: [
+                  if (spreadsheetId != null)
+                    TextButton.icon(
+                      icon: const Icon(Icons.table_chart_outlined),
+                      label: const Text('Open spreadsheet'),
+                      onPressed: () => launchUrl(
+                        Uri.parse(
+                          'https://docs.google.com/spreadsheets/d/$spreadsheetId',
+                        ),
+                      ),
+                    ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: notifier.signOut,
+                    child: const Text('Sign out'),
+                  ),
+                ],
               ),
             ),
           ],

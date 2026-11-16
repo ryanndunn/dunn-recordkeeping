@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/app_settings.dart';
 import '../models/place.dart';
+import '../models/saved_address.dart';
 
 /// One synced setting: its value (as JSON) and when it was last changed.
 class SyncField {
@@ -122,6 +123,104 @@ bool docsEqual(SyncDoc a, SyncDoc b) =>
     apiKey: apiKey,
     apiKeyChanged: apiKeyChanged,
   );
+}
+
+// ------------------------------------------------------------------ clients
+//
+// Each client is its own entry in the same file, keyed "client:<id>", so
+// the newer change wins client by client. A deleted client stays as an
+// entry with a null value, so the deletion reaches the other device.
+
+const _clientPrefix = 'client:';
+
+bool isClientKey(String key) => key.startsWith(_clientPrefix);
+
+/// This device's clients and deletions as [SyncDoc] entries.
+SyncDoc clientDocFromLocal(
+  List<SavedAddress> clients,
+  Map<String, DateTime> deletions,
+) {
+  final doc = <String, SyncField>{
+    for (final e in deletions.entries)
+      '$_clientPrefix${e.key}': SyncField(null, e.value.toUtc()),
+  };
+  for (final c in clients) {
+    final at = (c.updatedAt ?? legacyTime).toUtc();
+    final key = '$_clientPrefix${c.id}';
+    final deleted = doc[key];
+    if (deleted == null || at.isAfter(deleted.at)) {
+      doc[key] = SyncField(c.toJson(withTime: false), at);
+    }
+  }
+  return doc;
+}
+
+/// Just the client entries of [doc].
+SyncDoc clientEntries(SyncDoc doc) => {
+  for (final e in doc.entries)
+    if (isClientKey(e.key)) e.key: e.value,
+};
+
+/// The clients and deletions described by [doc], clients sorted by name.
+({List<SavedAddress> clients, Map<String, DateTime> deletions}) clientsFromDoc(
+  SyncDoc doc,
+) {
+  final clients = <SavedAddress>[];
+  final deletions = <String, DateTime>{};
+  for (final e in doc.entries) {
+    if (!isClientKey(e.key)) continue;
+    final id = e.key.substring(_clientPrefix.length);
+    final v = e.value.value;
+    if (v == null) {
+      deletions[id] = e.value.at;
+    } else {
+      final c = SavedAddress.fromJson({
+        ...(v as Map<String, dynamic>),
+        'id': id,
+      });
+      clients.add(
+        c.copyWith(
+          updatedAt: e.value.at.isAtSameMomentAs(legacyTime)
+              ? null
+              : e.value.at,
+        ),
+      );
+    }
+  }
+  clients.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  return (clients: clients, deletions: deletions);
+}
+
+/// When the same client was added on both devices (same name at the same
+/// place), keeps one: the most recently changed, or on a tie the lower ID.
+/// The others are marked deleted just after their own change time, so every
+/// device makes the same choice and the copies don't come back.
+SyncDoc dedupeClients(SyncDoc doc) {
+  final groups = <String, List<MapEntry<String, SyncField>>>{};
+  for (final e in doc.entries) {
+    final v = e.value.value;
+    if (!isClientKey(e.key) || v is! Map<String, dynamic>) continue;
+    final name = (v['name'] as String? ?? '').trim().toLowerCase();
+    final where =
+        (v['placeId'] as String?) ??
+        (v['address'] as String? ?? '').trim().toLowerCase();
+    (groups['$name|$where'] ??= []).add(e);
+  }
+  final out = {...doc};
+  for (final copies in groups.values) {
+    if (copies.length < 2) continue;
+    copies.sort((a, b) {
+      final byTime = b.value.at.compareTo(a.value.at);
+      return byTime != 0 ? byTime : a.key.compareTo(b.key);
+    });
+    for (final dup in copies.skip(1)) {
+      out[dup.key] = SyncField(
+        null,
+        dup.value.at.add(const Duration(milliseconds: 1)),
+      );
+    }
+  }
+  return out;
 }
 
 String encodeDoc(SyncDoc doc) => jsonEncode({

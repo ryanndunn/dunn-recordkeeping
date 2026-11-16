@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
+import 'services/auto_trip.dart';
 import 'services/local_store.dart';
 import 'services/secret_store.dart';
 import 'state/providers.dart';
@@ -15,6 +16,7 @@ Future<void> main() async {
     ProviderScope(
       overrides: [
         localStoreProvider.overrideWithValue(LocalStore(prefs)),
+        autoTripInboxProvider.overrideWithValue(AutoTripInbox(prefs)),
         secretStoreProvider.overrideWithValue(secrets),
       ],
       child: const MileageApp(),

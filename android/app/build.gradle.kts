@@ -6,12 +6,16 @@ plugins {
 
 android {
     namespace = "com.dunnrecordkeeping.mileage_log"
-    compileSdk = flutter.compileSdkVersion
+    // 37: required by flutter_local_notifications, permission_handler and
+    // androidx.core 1.19 (higher than Flutter's default).
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Required by flutter_local_notifications.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     defaultConfig {
@@ -46,4 +50,9 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Required by flutter_local_notifications (Java 8+ APIs on older Android).
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

@@ -14,8 +14,10 @@ import '../services/places_service.dart';
 import '../services/routes_distance_service.dart';
 import '../services/secret_store.dart';
 import '../services/start_point.dart';
+import '../services/auto_trip.dart';
 import 'sync_provider.dart';
 
+export 'auto_trip_provider.dart';
 export 'sync_provider.dart';
 
 const _uuid = Uuid();
@@ -44,6 +46,10 @@ final addressMatcherProvider = Provider<AddressMatcher>(
 
 /// Injectable clock so tests can control "today".
 final clockProvider = Provider<DateTime Function()>((ref) => DateTime.now);
+
+/// Trips detected in the background, waiting to be added. Overridden in
+/// main(); null in tests that don't need it.
+final autoTripInboxProvider = Provider<AutoTripInbox?>((ref) => null);
 
 /// Overridden in main() once secure storage has been read.
 final secretStoreProvider = Provider<SecretStore>(
@@ -96,27 +102,61 @@ class AddressesNotifier extends Notifier<List<SavedAddress>> {
   @override
   List<SavedAddress> build() => ref.read(localStoreProvider).loadAddresses();
 
-  /// Saves a Google-verified [place] under [name].
-  Future<SavedAddress> add({required String name, required Place place}) async {
+  /// Saves a client at a Google-verified [place].
+  Future<SavedAddress> add({
+    required String name,
+    required Place place,
+    String email = '',
+    String phone = '',
+  }) async {
     final created = SavedAddress(
       id: _uuid.v4(),
       name: name.trim(),
       address: place.address,
+      email: email.trim(),
+      phone: phone.trim(),
       placeId: place.placeId,
       lat: place.lat,
       lng: place.lng,
+      updatedAt: _now(),
     );
     await _set([...state, created]);
+    _changed();
     return created;
   }
 
-  Future<void> replace(SavedAddress updated) =>
-      _set([for (final a in state) a.id == updated.id ? updated : a]);
+  Future<void> replace(SavedAddress updated) async {
+    final stamped = updated.copyWith(updatedAt: _now());
+    await _set([for (final a in state) a.id == updated.id ? stamped : a]);
+    _changed();
+  }
 
-  Future<void> remove(String id) => _set([
-    for (final a in state)
-      if (a.id != id) a,
-  ]);
+  /// Deletes a client here and, through sync, on the other device.
+  Future<void> remove(String id) async {
+    final store = ref.read(localStoreProvider);
+    await store.saveClientDeletions({
+      ...store.loadClientDeletions(),
+      id: _now(),
+    });
+    await _set([
+      for (final a in state)
+        if (a.id != id) a,
+    ]);
+    _changed();
+  }
+
+  /// Replaces the list with one merged from the other device (no re-sync).
+  Future<void> replaceFromSync(
+    List<SavedAddress> clients,
+    Map<String, DateTime> deletions,
+  ) async {
+    await ref.read(localStoreProvider).saveClientDeletions(deletions);
+    await _set(clients);
+  }
+
+  DateTime _now() => ref.read(clockProvider)().toUtc();
+
+  void _changed() => ref.read(syncProvider.notifier).localChanged();
 
   Future<void> _set(List<SavedAddress> next) async {
     state = next;
@@ -150,6 +190,18 @@ class SettingsNotifier extends Notifier<AppSettings> {
   /// Marks [field] as just changed on this device (for settings kept
   /// elsewhere, like the API key) and syncs.
   Future<void> stamp(String field) => _change(field, state);
+
+  /// Records a newly created spreadsheet. Called from inside a sync, which
+  /// uploads it to the other device itself.
+  Future<void> setSpreadsheetId(String id) => _save(
+    AppSettings(
+      home: state.home,
+      navApp: state.navApp,
+      ratePerMile: state.ratePerMile,
+      spreadsheetId: id,
+      changedAt: state.changedAt,
+    ).stamped(SyncedField.spreadsheetId, ref.read(clockProvider)()),
+  );
 
   /// Replaces settings with ones merged from the other device (no re-sync).
   Future<void> replaceFromSync(AppSettings merged) => _save(merged);
@@ -200,9 +252,57 @@ class TripsNotifier extends Notifier<List<Trip>> {
   @override
   List<Trip> build() => ref.read(localStoreProvider).loadTrips();
 
+  /// Adds trips the phone detected in the background (see
+  /// arrival_handler.dart). Measures any that were logged offline.
+  /// Returns how many were added.
+  Future<int> mergeInbox() async {
+    final inbox = ref.read(autoTripInboxProvider);
+    if (inbox == null) return 0;
+    final entries = await inbox.load();
+    if (entries.isEmpty) return 0;
+
+    final known = {for (final t in state) t.id};
+    final taken = <String>{};
+    final added = <Trip>[];
+    for (final e in entries) {
+      if (known.contains(e.trip.id)) {
+        taken.add(e.trip.id);
+        continue;
+      }
+      var trip = e.trip;
+      if (e.needsMiles) {
+        final distance = ref.read(distanceServiceProvider);
+        try {
+          trip = Trip(
+            id: trip.id,
+            date: trip.date,
+            from: trip.from,
+            to: trip.to,
+            miles: await distance.drivingMiles(trip.from, trip.to),
+            estimated: distance.isDemo,
+          );
+        } catch (_) {
+          continue; // Still offline; try again next time.
+        }
+      }
+      added.add(trip);
+      taken.add(trip.id);
+    }
+    if (added.isNotEmpty) {
+      await _set(
+        [...state, ...added]..sort((a, b) => a.date.compareTo(b.date)),
+      );
+      _changed();
+    }
+    await inbox.remove(taken);
+    return added.length;
+  }
+
   /// Logs a drive to [to]. Starts from [fromOverride] if given, otherwise
   /// from the last stop today, otherwise from home.
   Future<Trip> logTripTo(Place to, {Place? fromOverride}) async {
+    // Include trips detected in the background, so "from" is current.
+    await mergeInbox();
     final now = ref.read(clockProvider)();
     final from =
         fromOverride ??
@@ -212,7 +312,7 @@ class TripsNotifier extends Notifier<List<Trip>> {
           now: now,
         );
     if (from == null) throw const NoStartPointException();
-    if (_samePlace(from, to)) throw SameAsStartException(to);
+    if (isSamePlace(from, to)) throw SameAsStartException(to);
 
     final distance = ref.read(distanceServiceProvider);
     final miles = await distance.drivingMiles(from, to);
@@ -225,24 +325,52 @@ class TripsNotifier extends Notifier<List<Trip>> {
       estimated: distance.isDemo,
     );
     await _set([...state, trip]);
+    _changed();
     return trip;
   }
 
-  Future<void> remove(String id) => _set([
-    for (final t in state)
-      if (t.id != id) t,
+  /// Deletes a trip here, and from the spreadsheet if it was uploaded.
+  Future<void> remove(String id) async {
+    final trip = state.where((t) => t.id == id).firstOrNull;
+    if (trip == null) return;
+    if (trip.synced) {
+      final store = ref.read(localStoreProvider);
+      await store.savePendingDeletes({...store.loadPendingDeletes(), id});
+    }
+    await _set([
+      for (final t in state)
+        if (t.id != id) t,
+    ]);
+    _changed();
+  }
+
+  /// Marks trips as written to the spreadsheet.
+  Future<void> markSynced(Set<String> ids) => _set([
+    for (final t in state) ids.contains(t.id) ? t.copyWith(synced: true) : t,
   ]);
 
-  static bool _samePlace(Place a, Place b) {
-    if (a.placeId != null && a.placeId == b.placeId) return true;
-    return AddressMatcher.normalize(a.address) ==
-        AddressMatcher.normalize(b.address);
-  }
+  /// Marks every trip as needing upload (e.g. a new spreadsheet).
+  Future<void> markAllUnsynced() =>
+      _set([for (final t in state) t.copyWith(synced: false)]);
+
+  void _changed() => ref.read(syncProvider.notifier).localChanged();
 
   /// Puts a removed trip back (for Undo).
   Future<void> restore(Trip trip) async {
-    final next = [...state, trip]..sort((a, b) => a.date.compareTo(b.date));
+    final store = ref.read(localStoreProvider);
+    final pending = store.loadPendingDeletes();
+    final Trip restored;
+    if (pending.remove(trip.id)) {
+      // Its row is still in the sheet; just cancel the delete.
+      await store.savePendingDeletes(pending);
+      restored = trip.copyWith(synced: true);
+    } else {
+      // Its row is gone (or never existed); upload it again.
+      restored = trip.copyWith(synced: false);
+    }
+    final next = [...state, restored]..sort((a, b) => a.date.compareTo(b.date));
     await _set(next);
+    _changed();
   }
 
   Future<void> _set(List<Trip> next) async {

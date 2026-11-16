@@ -15,6 +15,8 @@ void main() {
       id: 'a1',
       name: 'Clinic',
       address: '1 Main St',
+      email: 'front@clinic.test',
+      phone: '555-0100',
       lat: 1.5,
       lng: -2.5,
     );
@@ -39,8 +41,8 @@ void main() {
     final reloaded = LocalStore(await SharedPreferences.getInstance());
     final a = reloaded.loadAddresses().single;
     expect(
-      (a.id, a.name, a.address, a.lat, a.lng),
-      ('a1', 'Clinic', '1 Main St', 1.5, -2.5),
+      (a.id, a.name, a.address, a.email, a.phone, a.lat, a.lng),
+      ('a1', 'Clinic', '1 Main St', 'front@clinic.test', '555-0100', 1.5, -2.5),
     );
 
     final t = reloaded.loadTrips().single;

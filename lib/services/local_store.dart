@@ -6,8 +6,9 @@ import '../models/app_settings.dart';
 import '../models/saved_address.dart';
 import '../models/trip.dart';
 
-/// On-device copy of addresses, trips and settings, so the app works
-/// offline. The Google Sheet becomes the shared copy in Phase 3.
+/// On-device copy of clients, trips and settings, so the app works
+/// offline. Settings and clients sync through Google Drive; trips go to the
+/// spreadsheet.
 class LocalStore {
   LocalStore(this._prefs);
 
@@ -17,6 +18,48 @@ class LocalStore {
   static const _tripsKey = 'trips_v1';
   static const _settingsKey = 'settings_v1';
   static const _distanceCacheKey = 'distance_cache_v1';
+  static const _pendingDeletesKey = 'pending_sheet_deletes_v1';
+  static const _autoTripsKey = 'auto_trips_enabled_v1';
+  static const _googleEmailKey = 'google_account_email_v1';
+  static const _clientDeletionsKey = 'client_deletions_v1';
+
+  /// Whether the phone logs trips on arrival at saved addresses.
+  bool get autoTripsEnabled => _prefs.getBool(_autoTripsKey) ?? false;
+
+  Future<void> setAutoTripsEnabled(bool on) =>
+      _prefs.setBool(_autoTripsKey, on);
+
+  /// Signed-in Google account, so background uploads use the right one.
+  String? get googleEmail => _prefs.getString(_googleEmailKey);
+
+  Future<void> setGoogleEmail(String? email) => email == null
+      ? _prefs.remove(_googleEmailKey)
+      : _prefs.setString(_googleEmailKey, email);
+
+  /// Trips deleted here that still need removing from the spreadsheet.
+  Set<String> loadPendingDeletes() =>
+      (_prefs.getStringList(_pendingDeletesKey) ?? const []).toSet();
+
+  Future<void> savePendingDeletes(Set<String> ids) =>
+      _prefs.setStringList(_pendingDeletesKey, ids.toList());
+
+  /// Clients deleted on this device and when, so the deletion reaches the
+  /// other device instead of the client coming back from it.
+  Map<String, DateTime> loadClientDeletions() {
+    final raw = _prefs.getString(_clientDeletionsKey);
+    if (raw == null) return {};
+    return (jsonDecode(raw) as Map<String, dynamic>).map(
+      (id, at) => MapEntry(id, DateTime.parse(at as String)),
+    );
+  }
+
+  Future<void> saveClientDeletions(Map<String, DateTime> deletions) =>
+      _prefs.setString(
+        _clientDeletionsKey,
+        jsonEncode(
+          deletions.map((id, at) => MapEntry(id, at.toUtc().toIso8601String())),
+        ),
+      );
 
   Map<String, double>? _distanceCache;
 

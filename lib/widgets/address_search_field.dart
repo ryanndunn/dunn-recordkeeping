@@ -213,12 +213,12 @@ class _AddressSearchFieldState extends ConsumerState<AddressSearchField> {
     final String helper;
     if (!hasGoogle) {
       helper = widget.includeSaved
-          ? 'Saved addresses only. Add a Google Maps API key in Settings '
+          ? 'Clients only. Add a Google Maps API key in Settings '
                 'to search any address.'
           : 'Add a Google Maps API key in Settings to search addresses.';
     } else {
       helper = widget.includeSaved
-          ? 'Pick a saved address or a Google Maps result'
+          ? 'Pick a client or a Google Maps result'
           : 'Pick a Google Maps result';
     }
 
@@ -240,7 +240,11 @@ class _AddressSearchFieldState extends ConsumerState<AddressSearchField> {
         textCapitalization: TextCapitalization.words,
         decoration: InputDecoration(
           labelText: widget.labelText,
-          hintText: hasGoogle ? 'Search Google Maps' : 'Saved name or address',
+          hintText: !widget.includeSaved
+              ? 'Search Google Maps'
+              : hasGoogle
+              ? 'Client name or any address'
+              : 'Client name or address',
           helperText: helper,
           helperMaxLines: 2,
           errorText: _error,
@@ -298,7 +302,7 @@ class _OptionsList extends StatelessWidget {
               for (final o in options)
                 switch (o) {
                   SavedOption(:final address) => ListTile(
-                    leading: const Icon(Icons.bookmark),
+                    leading: const Icon(Icons.person),
                     title: Text(address.name),
                     subtitle: Text(address.address),
                     onTap: () => onPick(o),
