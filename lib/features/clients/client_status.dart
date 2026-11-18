@@ -35,10 +35,11 @@ IconData statusIcon(ClientStatus s) => switch (s) {
 /// Background and text colors for each status.
 ({Color bg, Color fg}) statusColors(ClientStatus s, ColorScheme scheme) =>
     switch (s) {
-      ClientStatus.newClient => (
-        bg: scheme.secondaryContainer,
-        fg: scheme.onSecondaryContainer,
-      ),
+      // Pink, so new clients stand out.
+      ClientStatus.newClient =>
+        scheme.brightness == Brightness.dark
+            ? (bg: const Color(0xFF7A2950), fg: const Color(0xFFFFD9E6))
+            : (bg: const Color(0xFFFFD9E6), fg: const Color(0xFF7A2950)),
       ClientStatus.consultation || ClientStatus.policyDoc => (
         bg: scheme.tertiaryContainer,
         fg: scheme.onTertiaryContainer,
@@ -53,18 +54,24 @@ IconData statusIcon(ClientStatus s) => switch (s) {
       ),
     };
 
-/// A small status label, e.g. "Pending consultation".
+/// A small status label, e.g. "Pending consultation". With [dropdown], it
+/// has an arrow to show it opens a menu.
 class ClientStatusBadge extends StatelessWidget {
-  const ClientStatusBadge({super.key, required this.client});
+  const ClientStatusBadge({
+    super.key,
+    required this.client,
+    this.dropdown = false,
+  });
 
   final SavedAddress client;
+  final bool dropdown;
 
   @override
   Widget build(BuildContext context) {
     final status = client.status;
     final c = statusColors(status, Theme.of(context).colorScheme);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: EdgeInsets.fromLTRB(8, 2, dropdown ? 2 : 8, 2),
       decoration: BoxDecoration(
         color: c.bg,
         borderRadius: BorderRadius.circular(8),
@@ -79,6 +86,7 @@ class ClientStatusBadge extends StatelessWidget {
             style: Theme.of(context).textTheme.labelMedium
                 ?.copyWith(color: c.fg),
           ),
+          if (dropdown) Icon(Icons.arrow_drop_down, size: 18, color: c.fg),
         ],
       ),
     );

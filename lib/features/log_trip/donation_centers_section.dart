@@ -102,7 +102,7 @@ class DonationCentersSection extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Text(
               'Add the places you drop off donations. Stopping at one during '
-              'a job keeps the job going.',
+              'a session keeps the session going.',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),

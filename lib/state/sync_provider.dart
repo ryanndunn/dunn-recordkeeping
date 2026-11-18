@@ -296,9 +296,7 @@ class SyncNotifier extends Notifier<SyncState> {
     if (existing != null) {
       id = existing;
     } else {
-      id = await sheet.create(
-        ratePerMile: ref.read(settingsProvider).ratePerMile,
-      );
+      id = await sheet.create();
       await settings.setSpreadsheetId(id);
       await store.setStyledSheetId(id);
     }
@@ -343,9 +341,7 @@ class SyncNotifier extends Notifier<SyncState> {
       if (!e.missing || retried) rethrow;
       // The spreadsheet was deleted: start a new one with this device's
       // trips. (The other device adds its own when it next syncs.)
-      final fresh = await sheet.create(
-        ratePerMile: ref.read(settingsProvider).ratePerMile,
-      );
+      final fresh = await sheet.create();
       await settings.setSpreadsheetId(fresh);
       await store.setStyledSheetId(fresh);
       await store.savePendingDeletes(const {});

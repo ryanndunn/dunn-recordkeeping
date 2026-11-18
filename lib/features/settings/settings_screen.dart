@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../services/jobs.dart';
 import '../../state/providers.dart';
+import '../../widgets/page_body.dart';
 import '../log_trip/log_trip_screen.dart';
 import '../../widgets/place_dialog.dart';
 
@@ -42,16 +43,6 @@ class SettingsScreen extends ConsumerWidget {
     }
   }
 
-  Future<void> _editRate(BuildContext context, WidgetRef ref) async {
-    final current = ref.read(settingsProvider).ratePerMile;
-    final result = await showDialog<_RateResult>(
-      context: context,
-      builder: (_) => _RateDialog(initial: current),
-    );
-    if (result == null) return;
-    await ref.read(settingsProvider.notifier).setRatePerMile(result.rate);
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsProvider);
@@ -67,69 +58,52 @@ class SettingsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 640),
-          child: ListView(
-            children: [
-              const _MileageLogTile(),
-              if (ref.watch(autoTripProvider).supported) ...[
-                section('Automatic trips'),
-                const _AutoTripsSection(),
-              ],
-              section('Google account'),
-              const _GoogleAccountSection(),
-              section('Starting point'),
-              ListTile(
-                leading: home == null || home.isVerified
-                    ? const Icon(Icons.home_outlined)
-                    : Icon(
-                        Icons.warning_amber,
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                title: Text(home?.label ?? 'Home / office'),
-                subtitle: Text(
-                  home == null
-                      ? 'Not set'
-                      : home.isVerified
-                      ? home.address
-                      : '${home.address}\nNot verified. Tap to pick it '
-                            'from Google Maps.',
-                ),
-                isThreeLine: home != null && !home.isVerified,
-                trailing: const Icon(Icons.edit_outlined),
-                onTap: () => _editHome(context, ref),
-              ),
-              section('Mileage rate'),
-              ListTile(
-                leading: const Icon(Icons.attach_money),
-                title: const Text('Rate per mile'),
-                subtitle: Text(
-                  settings.ratePerMile == null
-                      ? 'Not set (optional, used for the Summary tab)'
-                      : '\$${settings.ratePerMile!.toStringAsFixed(3)} per mile',
-                ),
-                trailing: const Icon(Icons.edit_outlined),
-                onTap: () => _editRate(context, ref),
-              ),
-              section('Google Maps'),
-              ListTile(
-                leading: const Icon(Icons.key_outlined),
-                title: const Text('API key'),
-                subtitle: Text(
-                  apiKey == null
-                      ? 'Not set. Needed for address search and driving '
-                            'miles. See docs/GOOGLE_CLOUD_SETUP.md.'
-                      : 'Saved on this device (ending '
-                            '…${apiKey.substring(apiKey.length - 4)})',
-                ),
-                trailing: const Icon(Icons.edit_outlined),
-                onTap: () => _editApiKey(context, ref),
-              ),
-              const SizedBox(height: 24),
-            ],
+      body: PageListView(
+        children: [
+          const _MileageLogTile(),
+          if (ref.watch(autoTripProvider).supported) ...[
+            section('Automatic trips'),
+            const _AutoTripsSection(),
+          ],
+          section('Google account'),
+          const _GoogleAccountSection(),
+          section('Starting point'),
+          ListTile(
+            leading: home == null || home.isVerified
+                ? const Icon(Icons.home_outlined)
+                : Icon(
+                    Icons.warning_amber,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+            title: Text(home?.label ?? 'Home / office'),
+            subtitle: Text(
+              home == null
+                  ? 'Not set'
+                  : home.isVerified
+                  ? home.address
+                  : '${home.address}\nNot verified. Tap to pick it '
+                        'from Google Maps.',
+            ),
+            isThreeLine: home != null && !home.isVerified,
+            trailing: const Icon(Icons.edit_outlined),
+            onTap: () => _editHome(context, ref),
           ),
-        ),
+          section('Google Maps'),
+          ListTile(
+            leading: const Icon(Icons.key_outlined),
+            title: const Text('API key'),
+            subtitle: Text(
+              apiKey == null
+                  ? 'Not set. Needed for address search and driving '
+                        'miles. See docs/GOOGLE_CLOUD_SETUP.md.'
+                  : 'Saved on this device (ending '
+                        '…${apiKey.substring(apiKey.length - 4)})',
+            ),
+            trailing: const Icon(Icons.edit_outlined),
+            onTap: () => _editApiKey(context, ref),
+          ),
+          const SizedBox(height: 24),
+        ],
       ),
     );
   }
@@ -156,8 +130,8 @@ class _MileageLogTile extends ConsumerWidget {
         title: const Text('Mileage Log'),
         subtitle: Text(
           running == null
-              ? 'Log trips, see time on jobs, and manage donation centers'
-              : 'On a job since ${formatClock(running.start)}',
+              ? 'Log trips, see time in sessions, and manage donation centers'
+              : 'In a session since ${formatClock(running.start)}',
         ),
         trailing: const Icon(Icons.chevron_right),
         onTap: () => Navigator.of(
@@ -181,7 +155,7 @@ class _AutoTripsSection extends ConsumerWidget {
     final String status;
     if (!auto.enabled) {
       status =
-          'Off. When on, the phone logs your jobs, even with the app closed: '
+          'Off. When on, the phone logs your sessions, even with the app closed: '
           'arriving at a client starts one, and every drive is logged until '
           'you stop anywhere but a client, donation center or gas station. '
           'Works with Google Maps, Waze, or no navigation app.';
@@ -192,8 +166,8 @@ class _AutoTripsSection extends ConsumerWidget {
       status =
           'Watching ${auto.watching} '
           '${auto.watching == 1 ? 'place' : 'places'}. A stop counts after '
-          '5 minutes. During a job the phone also watches for other stops '
-          '(an "On a job" notification shows) to know when the job ends.';
+          '5 minutes. During a session the phone also watches for other stops '
+          '(an "In a session" notification shows) to know when it ends.';
     }
 
     return Column(
@@ -427,72 +401,6 @@ class _ApiKeyDialogState extends State<_ApiKeyDialog> {
             onPressed: () => Navigator.pop(context, const _KeyResult(null)),
             child: const Text('Remove key'),
           ),
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _save, child: const Text('Save')),
-      ],
-    );
-  }
-}
-
-class _RateResult {
-  const _RateResult(this.rate);
-  final double? rate;
-}
-
-class _RateDialog extends StatefulWidget {
-  const _RateDialog({required this.initial});
-  final double? initial;
-
-  @override
-  State<_RateDialog> createState() => _RateDialogState();
-}
-
-class _RateDialogState extends State<_RateDialog> {
-  late final _controller = TextEditingController(
-    text: widget.initial?.toString() ?? '',
-  );
-  String? _error;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _save() {
-    final text = _controller.text.trim().replaceAll('\$', '');
-    if (text.isEmpty) {
-      Navigator.pop(context, const _RateResult(null));
-      return;
-    }
-    final rate = double.tryParse(text);
-    if (rate == null || rate < 0 || rate > 10) {
-      setState(() => _error = 'Enter dollars per mile, e.g. 0.70');
-      return;
-    }
-    Navigator.pop(context, _RateResult(rate));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Rate per mile'),
-      content: TextField(
-        controller: _controller,
-        autofocus: true,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: InputDecoration(
-          prefixText: '\$ ',
-          hintText: '0.70',
-          helperText: 'Leave blank to clear',
-          errorText: _error,
-        ),
-        onSubmitted: (_) => _save(),
-      ),
-      actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('Cancel'),

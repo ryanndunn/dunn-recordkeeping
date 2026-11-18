@@ -17,9 +17,9 @@ final jobsProvider = NotifierProvider<JobsNotifier, List<Job>>(
   JobsNotifier.new,
 );
 
-/// Jobs: time out on the job, from leaving for the first client until
-/// arriving where the job ends. The phone's background handlers start and
-/// end them; trips logged by hand follow the same rules. Every change
+/// Sessions: time with clients, from arriving at the first client until
+/// leaving the last. The phone's background handlers start and end them;
+/// trips logged by hand follow the same rules. Every change
 /// re-reads storage first, since the background may have written.
 class JobsNotifier extends Notifier<List<Job>> {
   @override
@@ -77,14 +77,20 @@ class JobsNotifier extends Notifier<List<Job>> {
     await syncJobWatcher(store);
   }
 
-  /// Ends the running job now (e.g. the phone missed where it ended).
+  /// Ends the running session (e.g. the phone missed where it ended):
+  /// now if you're still with a client, else when you left the last one.
   Future<void> endNow() async {
     final store = ref.read(localStoreProvider);
     await store.reload();
     final now = _now();
     await _save([
       for (final j in closeStaleJobs(store.loadJobs(), now))
-        j.isActive ? j.copyWith(end: now) : j,
+        j.isActive
+            ? j.copyWith(
+                end: j.endingAt(now),
+                visits: j.visitsLeftAt(j.endingAt(now)),
+              )
+            : j,
     ]);
     await stopJobWatcher();
     ref.read(syncProvider.notifier).localChanged();
@@ -104,17 +110,7 @@ class JobsNotifier extends Notifier<List<Job>> {
   Future<void> markAllUnsynced() async {
     final store = ref.read(localStoreProvider);
     await store.reload();
-    await _save([
-      for (final j in store.loadJobs())
-        Job(
-          id: j.id,
-          start: j.start,
-          end: j.end,
-          startEstimated: j.startEstimated,
-          clients: j.clients,
-          lastActivity: j.lastActivity,
-        ),
-    ]);
+    await _save([for (final j in store.loadJobs()) j.copyWith(synced: false)]);
   }
 
   Future<void> _save(List<Job> jobs) async {

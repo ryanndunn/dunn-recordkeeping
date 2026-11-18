@@ -1,11 +1,13 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'background/job_watcher.dart';
 import 'features/clients/clients_screen.dart';
 import 'features/settings/settings_screen.dart';
+import 'services/availability_link.dart';
 import 'state/providers.dart';
 
 class MileageApp extends StatelessWidget {
@@ -14,11 +16,18 @@ class MileageApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const seed = Color(0xFF2E7D32);
+    // Titles line up on the left everywhere (the Mac centers them by
+    // default).
+    const appBar = AppBarTheme(centerTitle: false);
     return MaterialApp(
       title: 'Dunn Record Keeping',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: seed),
-      darkTheme: ThemeData(colorSchemeSeed: seed, brightness: Brightness.dark),
+      theme: ThemeData(colorSchemeSeed: seed, appBarTheme: appBar),
+      darkTheme: ThemeData(
+        colorSchemeSeed: seed,
+        brightness: Brightness.dark,
+        appBarTheme: appBar,
+      ),
       home: const HomeShell(),
     );
   }
@@ -75,18 +84,77 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
   static const _pages = [ClientsScreen(), SettingsScreen()];
 
+  /// The bottom menu: Clients, Availability (a link to Google Calendar,
+  /// not a page), Settings.
+  static const _availability = 1;
+  int get _selected => _index == 0 ? 0 : 2;
+
+  /// Each tab has its own page stack, so the bottom bar stays on screen
+  /// when a client page (or the Mileage Log) opens.
+  final _tabs = [for (final _ in _pages) GlobalKey<NavigatorState>()];
+
+  void _select(int destination) {
+    if (destination == _availability) {
+      openAvailabilityEditor();
+      return;
+    }
+    final i = destination == 0 ? 0 : 1;
+    if (i == _index) {
+      // Tapping the open tab goes back to its first page.
+      _tabs[i].currentState?.popUntil((r) => r.isFirst);
+    } else {
+      setState(() => _index = i);
+    }
+  }
+
+  /// The phone's back button: back within the tab, then to Clients, then
+  /// out of the app.
+  void _back() {
+    final tab = _tabs[_index].currentState;
+    if (tab != null && tab.canPop()) {
+      tab.pop();
+    } else if (_index != 0) {
+      setState(() => _index = 0);
+    } else {
+      SystemNavigator.pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _index, children: _pages),
+      body: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _back();
+        },
+        child: IndexedStack(
+          index: _index,
+          children: [
+            for (var i = 0; i < _pages.length; i++)
+              HeroControllerScope.none(
+                child: Navigator(
+                  key: _tabs[i],
+                  onGenerateRoute: (_) =>
+                      MaterialPageRoute<void>(builder: (_) => _pages[i]),
+                ),
+              ),
+          ],
+        ),
+      ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        selectedIndex: _selected,
+        onDestinationSelected: _select,
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.people_outline),
             selectedIcon: Icon(Icons.people),
             label: 'Clients',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.edit_calendar_outlined),
+            label: 'Availability',
+            tooltip: 'Edit availability in Google Calendar',
           ),
           NavigationDestination(
             icon: Icon(Icons.settings_outlined),

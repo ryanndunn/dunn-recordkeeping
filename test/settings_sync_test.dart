@@ -106,6 +106,11 @@ class MemoryLocalStore implements LocalStore {
       _donationDeletions = {...d};
   @override
   Future<void> reload() async {}
+  String? _sort;
+  @override
+  String? get clientSort => _sort;
+  @override
+  Future<void> setClientSort(String sort) async => _sort = sort;
   String? _otherJobs;
   @override
   String? get otherDeviceJobsRaw => _otherJobs;
@@ -680,11 +685,14 @@ void main() {
       },
     );
 
-    test('a finished job goes to the Jobs tab with its miles', () async {
+    test('a finished session goes to the Sessions tab with the miles '
+        'between clients', () async {
+      const garage = Place(label: 'Garage', address: '4 Elm St', placeId: 'g');
+      var t = now;
       final sheet = FakeSheet();
       final mac = await device(
         FakeRemote(),
-        clock: () => now,
+        clock: () => t,
         sheet: sheet,
         distance: FakeDistanceService(miles: 8),
       );
@@ -692,35 +700,47 @@ void main() {
       final c = await mac
           .read(addressesProvider.notifier)
           .add(name: 'Clinic', place: clinic);
+      final g = await mac
+          .read(addressesProvider.notifier)
+          .add(name: 'Garage', place: garage);
       await mac.read(syncProvider.notifier).signIn();
 
-      // A trip to a client starts a job; it uploads once it ends.
+      // A trip to a client starts a session; it uploads once it ends.
       await mac.read(tripsProvider.notifier).logTripTo(c.toPlace());
       expect(mac.read(jobsProvider).single.isActive, isTrue);
       await mac.read(syncProvider.notifier).syncNow();
       expect(sheet.jobRows['sheet-1'], isNull, reason: 'still running');
 
+      t = t.add(const Duration(hours: 2));
+      await mac.read(tripsProvider.notifier).logTripTo(g.toPlace());
+      t = t.add(const Duration(hours: 2));
       await mac.read(tripsProvider.notifier).logTripTo(home);
       expect(mac.read(jobsProvider).single.isActive, isFalse);
       await mac.read(syncProvider.notifier).syncNow();
       final row = sheet.jobRows['sheet-1']!.values.single;
-      expect(row.miles, 16);
-      expect(row.job.clients, ['Clinic']);
+      expect(row.miles, 8, reason: 'Clinic → Garage only');
+      expect(row.job.clients, ['Clinic', 'Garage']);
       expect(mac.read(jobsProvider).single.synced, isTrue);
     });
 
     test(
-      'a job recorded on the phone shows on the Mac, uploaded once',
+      'a session recorded on the phone shows on the Mac, uploaded once',
       () async {
+        const garage = Place(
+          label: 'Garage',
+          address: '4 Elm St',
+          placeId: 'g',
+        );
+        var t = now;
         final remote = FakeRemote();
         final sheet = FakeSheet();
         final phone = await device(
           remote,
-          clock: () => now,
+          clock: () => t,
           sheet: sheet,
           distance: FakeDistanceService(miles: 8),
         );
-        final mac = await device(remote, clock: () => now, sheet: sheet);
+        final mac = await device(remote, clock: () => t, sheet: sheet);
         await phone.read(syncProvider.notifier).signIn();
         await mac.read(syncProvider.notifier).signIn();
 
@@ -728,7 +748,12 @@ void main() {
         final c = await phone
             .read(addressesProvider.notifier)
             .add(name: 'Clinic', place: clinic);
+        final g = await phone
+            .read(addressesProvider.notifier)
+            .add(name: 'Garage', place: garage);
         await phone.read(tripsProvider.notifier).logTripTo(c.toPlace());
+        t = t.add(const Duration(hours: 2));
+        await phone.read(tripsProvider.notifier).logTripTo(g.toPlace());
         await phone.read(syncProvider.notifier).syncNow();
         await mac.read(syncProvider.notifier).syncNow();
 
@@ -736,16 +761,17 @@ void main() {
         final onMac = mac.read(allJobSummariesProvider).single;
         expect(onMac.job.isActive, isTrue);
         expect(onMac.miles, 8);
-        expect(onMac.stops.single.label, 'Clinic');
+        expect([for (final p in onMac.stops) p.label], ['Clinic', 'Garage']);
         expect(mac.read(jobsProvider), isEmpty);
 
-        // Ended on the phone: the Mac gets the finished job.
+        // Ended on the phone: the Mac gets the finished session.
+        t = t.add(const Duration(hours: 2));
         await phone.read(tripsProvider.notifier).logTripTo(home);
         await phone.read(syncProvider.notifier).syncNow();
         await mac.read(syncProvider.notifier).syncNow();
         final ended = mac.read(allJobSummariesProvider).single;
         expect(ended.job.isActive, isFalse);
-        expect(ended.miles, 16);
+        expect(ended.miles, 8);
 
         // Only the phone uploads it.
         await mac.read(syncProvider.notifier).syncNow();

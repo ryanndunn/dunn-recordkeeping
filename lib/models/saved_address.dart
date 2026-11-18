@@ -1,4 +1,7 @@
+import 'billing.dart';
 import 'place.dart';
+
+export 'billing.dart';
 
 /// Every address of every client you still work with (see
 /// [SavedAddress.stops]). Archived clients are left out, so going there
@@ -25,32 +28,54 @@ enum ClientStatus {
   final String shortLabel;
 }
 
-/// A job booked with a client for a future day and time.
+/// A session booked with a client: day, start and end time. The booked
+/// time is what's billed (see [billFor]).
 class ScheduledJob {
-  const ScheduledJob({required this.id, required this.start, this.notes = ''});
+  const ScheduledJob({
+    required this.id,
+    required this.start,
+    this.end,
+    this.notes = '',
+  });
 
   final String id;
 
-  /// When the job is booked to start (local time).
+  /// When the session is booked to start and end (local time). [end] is
+  /// null for sessions booked before end times existed.
   final DateTime start;
+  final DateTime? end;
   final String notes;
 
-  ScheduledJob copyWith({DateTime? start, String? notes}) => ScheduledJob(
-    id: id,
-    start: start ?? this.start,
-    notes: notes ?? this.notes,
-  );
+  /// The booked length, if it has an end time.
+  Duration? get duration => end?.difference(start);
+
+  /// What the session bills at [hourlyRate], or null without an end time.
+  double? billFor(double hourlyRate) {
+    final d = duration;
+    if (d == null || d.isNegative) return null;
+    return (d.inMinutes / 60 * hourlyRate * 100).round() / 100;
+  }
+
+  ScheduledJob copyWith({DateTime? start, DateTime? end, String? notes}) =>
+      ScheduledJob(
+        id: id,
+        start: start ?? this.start,
+        end: end ?? this.end,
+        notes: notes ?? this.notes,
+      );
 
   Map<String, dynamic> toJson() => {
     'id': id,
     // Local wall-clock time, so both devices show the same time.
     'start': _localIso(start),
+    if (end != null) 'end': _localIso(end!),
     if (notes.isNotEmpty) 'notes': notes,
   };
 
   factory ScheduledJob.fromJson(Map<String, dynamic> json) => ScheduledJob(
     id: json['id'] as String,
     start: DateTime.parse(json['start'] as String),
+    end: json['end'] == null ? null : DateTime.parse(json['end'] as String),
     notes: json['notes'] as String? ?? '',
   );
 }
@@ -104,6 +129,44 @@ class ClientLocation {
   );
 }
 
+/// Someone else to reach about a client (and who may pay): a spouse,
+/// an adult child, a property manager, …
+class ClientContact {
+  const ClientContact({
+    required this.id,
+    required this.name,
+    this.phone = '',
+    this.email = '',
+  });
+
+  final String id;
+  final String name;
+  final String phone;
+  final String email;
+
+  ClientContact copyWith({String? name, String? phone, String? email}) =>
+      ClientContact(
+        id: id,
+        name: name ?? this.name,
+        phone: phone ?? this.phone,
+        email: email ?? this.email,
+      );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    if (phone.isNotEmpty) 'phone': phone,
+    if (email.isNotEmpty) 'email': email,
+  };
+
+  factory ClientContact.fromJson(Map<String, dynamic> json) => ClientContact(
+    id: json['id'] as String,
+    name: json['name'] as String? ?? '',
+    phone: json['phone'] as String? ?? '',
+    email: json['email'] as String? ?? '',
+  );
+}
+
 /// A client: who they are, how to reach them, and where appointments are.
 /// Logging a trip to a client's address is a single tap, and arriving there
 /// logs the trip automatically.
@@ -117,12 +180,16 @@ class SavedAddress {
     this.placeId,
     this.lat,
     this.lng,
+    this.addressLabel = '',
     this.locations = const [],
+    this.contacts = const [],
+    this.billing = const {},
     this.hourlyRate = defaultHourlyRate,
     this.policiesSignedOn,
     this.consultationOn,
     this.storedStatus,
     this.scheduled = const [],
+    this.notes = '',
     this.updatedAt,
   });
 
@@ -143,8 +210,19 @@ class SavedAddress {
   final double? lat;
   final double? lng;
 
-  /// The client's other addresses, besides the main one.
+  /// What the first address is (e.g. "Home"); may be empty.
+  final String addressLabel;
+
+  /// The client's other addresses. All addresses are equal in the app;
+  /// the first one is kept in [address] for trips and older data.
   final List<ClientLocation> locations;
+
+  /// Other people to reach about the client (and who may pay).
+  final List<ClientContact> contacts;
+
+  /// Billing status of each session, by session key (see
+  /// `ClientJobEntry.billingKeys`).
+  final Map<String, SessionBilling> billing;
 
   /// What this client pays per hour, in dollars.
   final double hourlyRate;
@@ -162,6 +240,9 @@ class SavedAddress {
 
   /// Jobs booked with this client, soonest first.
   final List<ScheduledJob> scheduled;
+
+  /// Free-form notes about the client.
+  final String notes;
 
   /// Where the client is: as set, or for older clients, active if they
   /// signed the policies and waiting on the policy doc if not.
@@ -195,13 +276,57 @@ class SavedAddress {
     for (final l in locations)
       SavedAddress(
         id: '$id/${l.id}',
-        name: '$name (${l.label})',
+        name:
+            '$name (${l.label.isEmpty ? l.address.split(',').first : l.label})',
         address: l.address,
         placeId: l.placeId,
         lat: l.lat,
         lng: l.lng,
       ),
   ];
+
+  /// Every address as a [ClientLocation], the first one (kept in
+  /// [address]) with ID [mainAddressId].
+  List<ClientLocation> get allAddresses => [
+    ClientLocation(
+      id: mainAddressId,
+      label: addressLabel,
+      address: address,
+      placeId: placeId,
+      lat: lat,
+      lng: lng,
+    ),
+    ...locations,
+  ];
+
+  static const mainAddressId = 'main';
+
+  /// This client with [addresses] (at least one) as their addresses, the
+  /// first becoming the one trips and older app versions use.
+  SavedAddress withAddresses(List<ClientLocation> addresses) {
+    final first = addresses.first;
+    return SavedAddress(
+      id: id,
+      name: name,
+      address: first.address,
+      email: email,
+      phone: phone,
+      placeId: first.placeId,
+      lat: first.lat,
+      lng: first.lng,
+      addressLabel: first.label,
+      locations: addresses.skip(1).toList(),
+      contacts: contacts,
+      billing: billing,
+      hourlyRate: hourlyRate,
+      policiesSignedOn: policiesSignedOn,
+      consultationOn: consultationOn,
+      storedStatus: storedStatus,
+      scheduled: scheduled,
+      notes: notes,
+      updatedAt: updatedAt,
+    );
+  }
 
   SavedAddress copyWith({
     String? name,
@@ -211,7 +336,10 @@ class SavedAddress {
     String? placeId,
     double? lat,
     double? lng,
+    String? addressLabel,
     List<ClientLocation>? locations,
+    List<ClientContact>? contacts,
+    Map<String, SessionBilling>? billing,
     double? hourlyRate,
     DateTime? policiesSignedOn,
     bool clearPoliciesSigned = false,
@@ -219,6 +347,7 @@ class SavedAddress {
     bool clearConsultation = false,
     ClientStatus? status,
     List<ScheduledJob>? scheduled,
+    String? notes,
     DateTime? updatedAt,
   }) => SavedAddress(
     id: id,
@@ -229,7 +358,10 @@ class SavedAddress {
     placeId: placeId ?? this.placeId,
     lat: lat ?? this.lat,
     lng: lng ?? this.lng,
+    addressLabel: addressLabel ?? this.addressLabel,
     locations: locations ?? this.locations,
+    contacts: contacts ?? this.contacts,
+    billing: billing ?? this.billing,
     hourlyRate: hourlyRate ?? this.hourlyRate,
     policiesSignedOn: clearPoliciesSigned
         ? null
@@ -239,6 +371,7 @@ class SavedAddress {
         : consultationOn ?? this.consultationOn,
     storedStatus: status ?? storedStatus,
     scheduled: scheduled ?? this.scheduled,
+    notes: notes ?? this.notes,
     updatedAt: updatedAt ?? this.updatedAt,
   );
 
@@ -253,8 +386,12 @@ class SavedAddress {
     if (placeId != null) 'placeId': placeId,
     if (lat != null) 'lat': lat,
     if (lng != null) 'lng': lng,
+    if (addressLabel.isNotEmpty) 'addressLabel': addressLabel,
     if (locations.isNotEmpty)
       'locations': [for (final l in locations) l.toJson()],
+    if (contacts.isNotEmpty) 'contacts': [for (final c in contacts) c.toJson()],
+    if (billing.isNotEmpty)
+      'billing': {for (final e in billing.entries) e.key: e.value.toJson()},
     // Left out at the default, so clients saved before rates existed
     // sync unchanged.
     if (hourlyRate != defaultHourlyRate) 'hourlyRate': hourlyRate,
@@ -265,6 +402,7 @@ class SavedAddress {
     if (storedStatus != null) 'status': storedStatus!.name,
     if (scheduled.isNotEmpty)
       'scheduled': [for (final j in scheduled) j.toJson()],
+    if (notes.isNotEmpty) 'notes': notes,
     if (withTime && updatedAt != null)
       'updatedAt': updatedAt!.toUtc().toIso8601String(),
   };
@@ -278,10 +416,20 @@ class SavedAddress {
     placeId: json['placeId'] as String?,
     lat: (json['lat'] as num?)?.toDouble(),
     lng: (json['lng'] as num?)?.toDouble(),
+    addressLabel: json['addressLabel'] as String? ?? '',
     locations: [
       for (final l in (json['locations'] as List?) ?? const [])
         ClientLocation.fromJson(l as Map<String, dynamic>),
     ],
+    contacts: [
+      for (final c in (json['contacts'] as List?) ?? const [])
+        ClientContact.fromJson(c as Map<String, dynamic>),
+    ],
+    billing: {
+      for (final e
+          in ((json['billing'] as Map<String, dynamic>?) ?? const {}).entries)
+        e.key: SessionBilling.fromJson(e.value as Map<String, dynamic>),
+    },
     hourlyRate: (json['hourlyRate'] as num?)?.toDouble() ?? defaultHourlyRate,
     policiesSignedOn: json['policiesSignedOn'] == null
         ? null
@@ -296,6 +444,7 @@ class SavedAddress {
       for (final j in (json['scheduled'] as List?) ?? const [])
         ScheduledJob.fromJson(j as Map<String, dynamic>),
     ]..sort((a, b) => a.start.compareTo(b.start)),
+    notes: json['notes'] as String? ?? '',
     updatedAt: json['updatedAt'] == null
         ? null
         : DateTime.parse(json['updatedAt'] as String),

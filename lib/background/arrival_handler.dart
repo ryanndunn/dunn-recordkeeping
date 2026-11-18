@@ -48,13 +48,17 @@ Future<void> onArrival(GeofenceCallbackParams params) async {
   }
 }
 
-/// Remembers when the phone left a saved place: the start of a job's
-/// clock if the next stop is a client.
+/// Remembers when the phone left a saved place. Leaving a client during
+/// a session is when their time ended (unless you come back).
 Future<void> _recordDeparture(String fenceId, DateTime at) async {
   final store = await _openStore();
   if (!store.autoTripsEnabled) return;
   final where = _placeForFence(store, fenceId);
-  if (where != null) await store.setLastDeparture(PlaceVisit(where.place, at));
+  if (where == null) return;
+  await store.setLastDeparture(PlaceVisit(where.place, at));
+  final jobs = store.loadJobs();
+  final next = applyDeparture(jobs: jobs, kind: where.kind, at: at);
+  if (!identical(next, jobs)) await store.saveJobs(next);
 }
 
 ({StopKind kind, Place place})? _placeForFence(LocalStore store, String id) =>
@@ -258,9 +262,9 @@ Future<void> _notify(
             '${trip.estimated ? ' (estimate)' : ''}'
             '${trip.synced ? ' · added to your spreadsheet' : ''}';
   final job = started != null
-      ? 'Job started ${formatClock(started.start)}. Watching for stops.'
+      ? 'Session started ${formatClock(started.start)}. Watching for stops.'
       : ended != null
-      ? 'Job ended: ${formatHours(ended.duration)} on the job'
+      ? 'Session ended after ${formatHours(ended.duration)}'
             '${jobUploaded ? ' · added to your spreadsheet' : ''}.'
       : null;
   await plugin.show(

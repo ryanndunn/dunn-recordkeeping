@@ -16,8 +16,16 @@ abstract final class SyncedField {
   static const ratePerMile = 'ratePerMile';
   static const spreadsheetId = 'spreadsheetId';
   static const apiKey = 'apiKey';
+  static const bookingUrl = 'bookingUrl';
 
-  static const all = [home, navApp, ratePerMile, spreadsheetId, apiKey];
+  static const all = [
+    home,
+    navApp,
+    ratePerMile,
+    spreadsheetId,
+    apiKey,
+    bookingUrl,
+  ];
 }
 
 class AppSettings {
@@ -26,6 +34,7 @@ class AppSettings {
     this.navApp = NavApp.googleMaps,
     this.ratePerMile,
     this.spreadsheetId,
+    this.bookingUrl,
     this.changedAt = const {},
   });
 
@@ -41,6 +50,10 @@ class AppSettings {
   /// The Google Sheet the log is written to (Phase 3).
   final String? spreadsheetId;
 
+  /// The Google Calendar booking page for consultations, shown on the
+  /// Availability tab.
+  final String? bookingUrl;
+
   /// When each [SyncedField] was last changed on this device (or arrived
   /// from another). The newer change wins when devices sync.
   final Map<String, DateTime> changedAt;
@@ -51,12 +64,15 @@ class AppSettings {
     double? ratePerMile,
     bool clearRatePerMile = false,
     String? spreadsheetId,
+    String? bookingUrl,
+    bool clearBookingUrl = false,
     Map<String, DateTime>? changedAt,
   }) => AppSettings(
     home: home ?? this.home,
     navApp: navApp ?? this.navApp,
     ratePerMile: clearRatePerMile ? null : (ratePerMile ?? this.ratePerMile),
     spreadsheetId: spreadsheetId ?? this.spreadsheetId,
+    bookingUrl: clearBookingUrl ? null : (bookingUrl ?? this.bookingUrl),
     changedAt: changedAt ?? this.changedAt,
   );
 
@@ -69,6 +85,7 @@ class AppSettings {
     'navApp': navApp.name,
     if (ratePerMile != null) 'ratePerMile': ratePerMile,
     if (spreadsheetId != null) 'spreadsheetId': spreadsheetId,
+    if (bookingUrl != null) 'bookingUrl': bookingUrl,
     if (changedAt.isNotEmpty)
       'changedAt': {
         for (final e in changedAt.entries) e.key: e.value.toIso8601String(),
@@ -85,6 +102,7 @@ class AppSettings {
     ),
     ratePerMile: (json['ratePerMile'] as num?)?.toDouble(),
     spreadsheetId: json['spreadsheetId'] as String?,
+    bookingUrl: json['bookingUrl'] as String?,
     changedAt: {
       for (final e
           in ((json['changedAt'] as Map<String, dynamic>?) ?? const {}).entries)

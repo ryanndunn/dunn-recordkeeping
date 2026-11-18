@@ -39,8 +39,8 @@ Future<void> configureJobWatcher() async {
       ?.createNotificationChannel(
         const AndroidNotificationChannel(
           _channelId,
-          'On a job',
-          description: 'Shown while the app watches for stops during a job',
+          'In a session',
+          description: 'Shown while the app watches for stops during a session',
           importance: Importance.low,
         ),
       );
@@ -51,7 +51,7 @@ Future<void> configureJobWatcher() async {
       autoStartOnBoot: false,
       isForegroundMode: true,
       notificationChannelId: _channelId,
-      initialNotificationTitle: 'On a job',
+      initialNotificationTitle: 'In a session',
       initialNotificationContent: 'Watching for stops to log mileage',
       foregroundServiceNotificationId: _notificationId,
       foregroundServiceTypes: [AndroidForegroundType.location],
@@ -144,7 +144,7 @@ Future<void> jobWatcherMain(ServiceInstance service) async {
           }
           if (service is AndroidServiceInstance) {
             await service.setForegroundNotificationInfo(
-              title: 'On a job since ${formatClock(running.start)}',
+              title: 'In a session since ${formatClock(running.start)}',
               content: 'Watching for stops to log mileage',
             );
           }

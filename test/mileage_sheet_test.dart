@@ -157,25 +157,31 @@ void main() {
       }
     });
 
-    MockClient spreadsheetWith(List<int> tabIds, List<http.Request> log) =>
-        MockClient((r) async {
-          log.add(r);
-          if (r.method == 'GET') {
-            return http.Response(
-              jsonEncode({
-                'sheets': [
-                  for (final id in tabIds)
-                    {
-                      'properties': {'sheetId': id},
-                    },
-                ],
-              }),
-              200,
-              headers: _json,
-            );
-          }
-          return http.Response('{}', 200, headers: _json);
-        });
+    MockClient spreadsheetWith(
+      List<int> tabIds,
+      List<http.Request> log, {
+      String jobsTitle = 'Sessions',
+    }) => MockClient((r) async {
+      log.add(r);
+      if (r.method == 'GET') {
+        return http.Response(
+          jsonEncode({
+            'sheets': [
+              for (final id in tabIds)
+                {
+                  'properties': {
+                    'sheetId': id,
+                    'title': id == 3 ? jobsTitle : 'Tab $id',
+                  },
+                },
+            ],
+          }),
+          200,
+          headers: _json,
+        );
+      }
+      return http.Response('{}', 200, headers: _json);
+    });
 
     test('updating an older spreadsheet adds the Jobs tab', () async {
       final requests = <http.Request>[];
@@ -186,9 +192,23 @@ void main() {
           if (r.method != 'GET') r.body,
       ];
       expect(bodies[0], contains('addSheet'));
-      expect(bodies[0], contains('"title":"Jobs"'));
+      expect(bodies[0], contains('"title":"Sessions"'));
       expect(bodies[1], contains('Hours'), reason: 'header row');
       expect(bodies[2], contains('addBanding'), reason: 'Jobs tab look');
+    });
+
+    test('an older "Jobs" tab is renamed "Sessions"', () async {
+      final requests = <http.Request>[];
+      await GoogleMileageSheet(
+        spreadsheetWith([1, 2, 3], requests, jobsTitle: 'Jobs'),
+      ).restyle('sheet-1');
+      final bodies = [
+        for (final r in requests)
+          if (r.method != 'GET') r.body,
+      ];
+      expect(bodies[0], contains('updateSheetProperties'));
+      expect(bodies[0], contains('"title":"Sessions"'));
+      expect(bodies[1], contains('Session ID'), reason: 'header row');
     });
 
     test('restyling sends the current trip-row look', () async {

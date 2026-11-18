@@ -24,7 +24,7 @@ class LocalStore {
   static const _googleEmailKey = 'google_account_email_v1';
   static const _clientDeletionsKey = 'client_deletions_v1';
   // Bump the version when restyleRequests changes, so it runs again.
-  static const _styledSheetKey = 'styled_sheet_id_v5';
+  static const _styledSheetKey = 'styled_sheet_id_v6';
 
   /// The spreadsheet already given the current look (see
   /// MileageSheet.restyle), so the update runs once per spreadsheet.
@@ -148,6 +148,14 @@ class LocalStore {
     if (raw == null) return null;
     return PlaceVisit.fromJson(jsonDecode(raw) as Map<String, dynamic>);
   }
+
+  static const _clientSortKey = 'clients_sort_v1';
+
+  /// How the client list was last sorted on this device.
+  String? get clientSort => _prefs.getString(_clientSortKey);
+
+  Future<void> setClientSort(String sort) =>
+      _prefs.setString(_clientSortKey, sort);
 
   static const _otherJobsKey = 'other_device_jobs_v1';
 

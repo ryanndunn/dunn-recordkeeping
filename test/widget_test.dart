@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:mileage_log/app.dart';
+import 'package:mileage_log/services/availability_link.dart';
 import 'package:mileage_log/models/place.dart';
 import 'package:mileage_log/services/distance_service.dart';
 import 'package:mileage_log/services/local_store.dart';
@@ -116,11 +117,19 @@ Future<void> openClientsTab(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
-/// Taps a filter chip, scrolling the chip row to it first.
-Future<void> tapChip(WidgetTester tester, String label) async {
-  await tester.ensureVisible(find.text(label));
+/// Picks [label] (e.g. "Active (1)") in the clients' Status dropdown.
+Future<void> chooseStatus(WidgetTester tester, String label) async {
+  await tester.tap(find.byType(DropdownButtonFormField<int>));
   await tester.pumpAndSettle();
-  await tester.tap(find.text(label));
+  await tester.tap(find.text(label).last);
+  await tester.pumpAndSettle();
+}
+
+/// Picks [label] from the status menu under a client's name.
+Future<void> setClientStatus(WidgetTester tester, String label) async {
+  await tester.tap(find.byTooltip('Change status'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(label).last);
   await tester.pumpAndSettle();
 }
 
@@ -466,7 +475,7 @@ void main() {
 
     await tester.tap(find.text('Clinic'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Add another address'));
+    await tester.tap(find.text('Add an address'));
     await tester.pumpAndSettle();
 
     FilledButton addButton() =>
@@ -487,7 +496,7 @@ void main() {
     // Back on the list, the client shows the extra address.
     await tester.tap(find.byType(BackButton));
     await tester.pumpAndSettle();
-    expect(find.textContaining('+ Storage unit'), findsOneWidget);
+    expect(find.textContaining('+ 1 more address'), findsOneWidget);
 
     // Log Trip offers it as its own stop.
     await openMileageLog(tester);
@@ -510,7 +519,7 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Remove'));
     await tester.pumpAndSettle();
     expect(find.text('Storage unit'), findsNothing);
-    expect(find.text('Add another address'), findsOneWidget);
+    expect(find.text('Add an address'), findsOneWidget);
   });
 
   testWidgets('clients have an hourly rate (default \$75)', (tester) async {
@@ -536,9 +545,13 @@ void main() {
 
   testWidgets('a client goes new → consultation → policy doc → active, and '
       'can be archived', (tester) async {
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
     await pumpApp(tester, _savedPrefs, openLogTrip: false);
     // Clients from before the statuses: waiting on the policy doc.
-    expect(find.text('Policy doc 2'), findsOneWidget);
+    await chooseStatus(tester, 'Pending policy doc (2)');
+    await chooseStatus(tester, 'All clients (2)');
 
     // A new client starts as New.
     await tester.tap(find.text('Add client'));
@@ -549,85 +562,120 @@ void main() {
     await tester.enterText(find.widgetWithText(TextField, 'Name'), 'Jane');
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
-    expect(find.text('New 1'), findsOneWidget);
+    await chooseStatus(tester, 'New (1)');
+    await chooseStatus(tester, 'All clients (3)');
 
     await tester.tap(find.text('Jane'));
     await tester.pumpAndSettle();
-    expect(find.text('Next: book the free 30-minute consultation'), findsOne);
+    expect(find.text('New'), findsOneWidget, reason: 'the status badge');
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Consultation booked'));
-    await tester.pumpAndSettle();
-    expect(find.text('Pending consultation'), findsWidgets);
+    // The badge under the name is the status menu.
+    await setClientStatus(tester, 'Pending consultation');
+    expect(find.text('Pending consultation'), findsOneWidget);
 
     // Consultation done: no date to pick; it's recorded as today.
-    await tester.tap(find.widgetWithText(FilledButton, 'Consultation done'));
-    await tester.pumpAndSettle();
+    await setClientStatus(tester, 'Pending policy doc');
     expect(find.byType(DatePickerDialog), findsNothing);
-    expect(find.text('Pending policy doc'), findsWidgets);
+    expect(find.text('Pending policy doc'), findsOneWidget);
     expect(find.textContaining('Consultation 11/14/26'), findsOneWidget);
     expect(find.text('Not signed yet'), findsOneWidget);
 
-    // Signing the policy doc (its own section) makes them active.
+    // Signing the policy doc (its own section) makes them active, and the
+    // section moves to the bottom of the page.
+    double top(Finder f) => tester.getTopLeft(f).dy;
+    expect(top(find.text('Not signed yet')) < top(find.text('Contacts')), isTrue);
     await tester.tap(find.widgetWithText(FilledButton, 'Mark signed'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('OK'));
     await tester.pumpAndSettle();
-    expect(find.text('Active'), findsWidgets);
+    expect(find.text('Active'), findsOneWidget);
     expect(find.text('Signed 11/14/26'), findsOneWidget);
+    expect(top(find.text('Signed 11/14/26')) > top(find.text('Sessions')), isTrue);
 
     await goBack(tester);
-    expect(find.text('Active 1'), findsOneWidget);
-    await tapChip(tester, 'Active 1');
+    await chooseStatus(tester, 'Active (1)');
     expect(find.text('Jane'), findsOneWidget);
     expect(find.text('Clinic'), findsNothing);
 
     // Archive: off the main list, and not offered as a trip stop.
     await tester.tap(find.text('Jane'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Change status'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Archive'));
-    await tester.pumpAndSettle();
-    expect(find.text('Archived'), findsWidgets);
+    await setClientStatus(tester, 'Archived');
+    expect(find.text('Archived'), findsOneWidget);
     await goBack(tester);
-    await tapChip(tester, 'All 2');
+    await chooseStatus(tester, 'All clients (2)');
     expect(find.text('Jane'), findsNothing);
-    await tapChip(tester, 'Archived 1');
+    await chooseStatus(tester, 'Archived (1)');
     expect(find.text('Jane'), findsOneWidget);
 
     await openMileageLog(tester);
     await search(tester, 'jane');
     expect(find.text('Jane'), findsNothing);
 
-    // Restore brings them back where they left off.
+    // Archived → Active: no date picker; the signed date is kept.
     await openClientsTab(tester);
     await tester.tap(find.text('Jane'));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, 'Restore'));
-    await tester.pumpAndSettle();
+    await setClientStatus(tester, 'Active');
     expect(find.byType(DatePickerDialog), findsNothing);
-    expect(find.text('Current client'), findsOneWidget);
+    expect(find.text('Active'), findsOneWidget);
     expect(find.text('Signed 11/14/26'), findsOneWidget);
-
-    // Archived → Active from the menu: no date picker either.
-    await tester.tap(find.byTooltip('Change status'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Archive'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Change status'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Set to Active'));
-    await tester.pumpAndSettle();
-    expect(find.byType(DatePickerDialog), findsNothing);
-    expect(find.text('Current client'), findsOneWidget);
 
     // Marking the policy doc not signed puts them back to waiting on it.
     await tester.tap(find.byTooltip('Policy doc options'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Mark as not signed'));
     await tester.pumpAndSettle();
-    expect(find.text('Pending policy doc'), findsWidgets);
+    expect(find.text('Pending policy doc'), findsOneWidget);
     expect(find.text('Not signed yet'), findsOneWidget);
+  });
+
+  testWidgets('a client page has notes, keeps the bottom bar, and switches '
+      'to other clients', (tester) async {
+    await pumpApp(tester, _savedPrefs, openLogTrip: false);
+    await tester.tap(find.text('Clinic'));
+    await tester.pumpAndSettle();
+    expect(find.byType(NavigationBar), findsOneWidget);
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Saved as you type'),
+      'Gate code 1234',
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    // Other clients are in the drawer on a phone-sized window.
+    await tester.tap(find.byTooltip('Other clients'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Dentist').last);
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(AppBar, 'Dentist'), findsOneWidget);
+    expect(find.text('Gate code 1234'), findsNothing);
+
+    // Back to Clinic: the note was saved.
+    await tester.tap(find.byTooltip('Other clients'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Clinic').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Gate code 1234'), findsOneWidget);
+
+    // Back goes to the list, not the previous client.
+    await goBack(tester);
+    expect(find.widgetWithText(AppBar, 'Clients'), findsOneWidget);
+  });
+
+  testWidgets('wide windows show the other clients beside the page', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await pumpApp(tester, _savedPrefs, openLogTrip: false);
+    await tester.tap(find.text('Clinic'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Other clients'), findsNothing);
+    await tester.tap(find.text('Dentist'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(AppBar, 'Dentist'), findsOneWidget);
   });
 
   testWidgets('Mileage Log lives in Settings, with jobs and donation centers', (
@@ -637,7 +685,7 @@ void main() {
     expect(find.text('Log Trip'), findsNothing, reason: 'no longer a tab');
     await openMileageLog(tester);
     expect(find.widgetWithText(AppBar, 'Mileage Log'), findsOneWidget);
-    expect(find.text('Not on a job'), findsOneWidget);
+    expect(find.text('Not in a session'), findsOneWidget);
 
     // Add a donation center.
     await tester.ensureVisible(find.text('Donation centers'));
@@ -653,12 +701,12 @@ void main() {
     expect(find.text('Goodwill'), findsOneWidget);
 
     // A trip to a client starts a job.
-    await tester.ensureVisible(find.text('Not on a job'));
+    await tester.ensureVisible(find.text('Not in a session'));
     await tester.pumpAndSettle();
     await search(tester, 'clin');
     await tester.tap(find.text('Clinic'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('On a job since'), findsOneWidget);
+    expect(find.textContaining('In a session since'), findsOneWidget);
 
     // The donation center is offered when searching, and keeps the job
     // going.
@@ -666,26 +714,28 @@ void main() {
     await tester.tap(find.text('Goodwill').first);
     await tester.pumpAndSettle();
     expect(find.text('Clinic → Goodwill'), findsOneWidget);
-    expect(find.textContaining('On a job since'), findsOneWidget);
+    expect(find.textContaining('In a session since'), findsOneWidget);
 
     // Back home ends it.
     await tester.tap(find.text('Return to Home'));
     await tester.pumpAndSettle();
-    expect(find.text('Not on a job'), findsOneWidget);
+    expect(find.text('Not in a session'), findsOneWidget);
     expect(find.textContaining('Today:'), findsOneWidget);
   });
 
-  testWidgets('a job can be scheduled, edited and cancelled', (tester) async {
+  testWidgets('a session is booked with an end time and billed at the '
+      'client\'s rate', (tester) async {
     await pumpApp(tester, _savedPrefs, openLogTrip: false);
     tester.view.physicalSize = const Size(420, 2200);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Clinic'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('No jobs yet'), findsOneWidget);
+    expect(find.textContaining('No sessions yet'), findsOneWidget);
 
-    // Book one for tomorrow (the default) at 9:00 AM.
-    await tester.tap(find.text('Schedule a job'));
+    // Book one for tomorrow (the default), 9:00 AM to noon.
+    await tester.tap(find.text('Schedule a session'));
     await tester.pumpAndSettle();
+    expect(find.text('3 h 00 m at \$75/hour = \$225'), findsOneWidget);
     await tester.enterText(
       find.widgetWithText(TextField, 'Notes (optional)'),
       'Garage clean-out',
@@ -693,14 +743,125 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
     expect(find.text('Upcoming'), findsOneWidget);
-    expect(find.text('Sun 11/15/26 · 9:00 AM'), findsOneWidget);
-    expect(find.text('Garage clean-out'), findsOneWidget);
+    const booked = 'Sun 11/15/26 · 9:00 AM – 12:00 PM';
+    expect(find.text(booked), findsOneWidget);
+    expect(
+      find.text('3 h 00 m with the client · \$225\nGarage clean-out'),
+      findsOneWidget,
+    );
+
+    // Clients pre-pay: mark it paid by Venmo.
+    expect(find.text('1 to bill · \$225'), findsOneWidget);
+    await tester.tap(find.text('Need to bill'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Paid').last);
+    await tester.pumpAndSettle();
+    FilledButton save() => tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Save').last,
+    );
+    expect(save().onPressed, isNull, reason: 'paid needs a method');
+    await tester.tap(find.text('Venmo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Paid'), findsOneWidget);
+    expect(find.text('Venmo'), findsOneWidget);
+    expect(find.text('Nothing to bill'), findsOneWidget);
 
     // Cancel it.
-    await tester.tap(find.text('Sun 11/15/26 · 9:00 AM'));
+    await tester.tap(find.text(booked));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Cancel job'));
+    await tester.tap(find.text('Cancel session'));
     await tester.pumpAndSettle();
     expect(find.text('Upcoming'), findsNothing);
+  });
+
+  testWidgets('a client can have more contacts, found by search', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(420, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await pumpApp(tester, _savedPrefs, openLogTrip: false);
+    await tester.tap(find.text('Clinic'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Add a contact'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Contact name'),
+      'Pat Spouse',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Email (optional)'),
+      'not-an-email',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Add'));
+    await tester.pumpAndSettle();
+    expect(find.text('Check the email address'), findsOneWidget);
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Email (optional)'),
+      'pat@example.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Phone (optional)'),
+      '(309) 555-0199',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Add'));
+    await tester.pumpAndSettle();
+    expect(find.text('Pat Spouse'), findsOneWidget);
+    expect(find.byTooltip('Call Pat Spouse'), findsOneWidget);
+
+    await goBack(tester);
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Search clients'),
+      '5550199',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Clinic'), findsOneWidget);
+    expect(find.text('Dentist'), findsNothing);
+  });
+
+  testWidgets('Availability in the menu opens Google Calendar and stays on '
+      'the current tab', (tester) async {
+    await pumpApp(tester, _savedPrefs, openLogTrip: false);
+    expect(
+      availabilityEditorUri.toString(),
+      'https://calendar.google.com/calendar/u/0/r/appointment?pli=1',
+    );
+    await tester.tap(find.text('Availability'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(AppBar, 'Clients'), findsOneWidget);
+  });
+
+  testWidgets('the client list can be searched and sorted', (tester) async {
+    await pumpApp(tester, _savedPrefs, openLogTrip: false);
+    expect(find.text('Clinic'), findsOneWidget);
+    expect(find.text('Dentist'), findsOneWidget);
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Search clients'),
+      'oak ave',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Dentist'), findsOneWidget);
+    expect(find.text('Clinic'), findsNothing);
+    expect(find.text('All clients (1)'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField).first, 'nobody');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('No clients match "nobody"'), findsOneWidget);
+    await tester.tap(find.byTooltip('Clear search'));
+    await tester.pumpAndSettle();
+    expect(find.text('All clients (2)'), findsOneWidget);
+
+    // Z–A puts Dentist first.
+    double top(String name) => tester.getTopLeft(find.text(name)).dy;
+    expect(top('Clinic') < top('Dentist'), isTrue);
+    await tester.tap(find.byTooltip('Sort'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Name (Z–A)'));
+    await tester.pumpAndSettle();
+    expect(top('Dentist') < top('Clinic'), isTrue);
   });
 }

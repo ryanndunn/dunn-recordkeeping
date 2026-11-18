@@ -7,6 +7,7 @@ import '../../models/trip.dart';
 import '../../services/address_matcher.dart';
 import '../../services/distance_service.dart';
 import '../../state/providers.dart';
+import '../../widgets/page_body.dart';
 import '../../widgets/address_search_field.dart';
 import '../../widgets/client_dialog.dart';
 import '../../widgets/place_dialog.dart';
@@ -235,134 +236,128 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Mileage Log')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 640),
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              if (isDemo) const _DemoBanner(),
-              const JobCard(),
-              const SizedBox(height: 12),
-              if (start == null)
-                Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.home_outlined),
-                    title: const Text('Set your home/office address'),
-                    subtitle: const Text(
-                      'The first trip each day is measured from here.',
-                    ),
-                    trailing: FilledButton(
-                      onPressed: _setHome,
-                      child: const Text('Set'),
-                    ),
-                  ),
-                )
-              else
-                Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.trip_origin),
-                    title: Text('From: ${start.label}'),
-                    subtitle: Text(
-                      _fromOverride == null
-                          ? start.address
-                          : '${start.address}\n(chosen for this trip)',
-                    ),
-                    isThreeLine: _fromOverride != null,
-                    trailing: TextButton(
-                      onPressed: _chooseStart,
-                      child: const Text('Change'),
-                    ),
-                  ),
+      body: PageListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (isDemo) const _DemoBanner(),
+          const JobCard(),
+          const SizedBox(height: 12),
+          if (start == null)
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.home_outlined),
+                title: const Text('Set your home/office address'),
+                subtitle: const Text(
+                  'The first trip each day is measured from here.',
                 ),
-              const SizedBox(height: 12),
-              AddressSearchField(
-                labelText: 'Going to',
-                includeSaved: true,
-                clearAfterPick: true,
-                enabled: start != null,
-                busy: _busy,
-                biasNear: home,
-                onPicked: _onPicked,
+                trailing: FilledButton(
+                  onPressed: _setHome,
+                  child: const Text('Set'),
+                ),
               ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _busy || home == null || start == null || atHome
-                    ? null
-                    : _returnHome,
-                icon: const Icon(Icons.home_outlined),
-                label: Text('Return to ${home?.label ?? 'home'}'),
+            )
+          else
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.trip_origin),
+                title: Text('From: ${start.label}'),
+                subtitle: Text(
+                  _fromOverride == null
+                      ? start.address
+                      : '${start.address}\n(chosen for this trip)',
+                ),
+                isThreeLine: _fromOverride != null,
+                trailing: TextButton(
+                  onPressed: _chooseStart,
+                  child: const Text('Change'),
+                ),
               ),
-              const SizedBox(height: 24),
-              Row(
+            ),
+          const SizedBox(height: 12),
+          AddressSearchField(
+            labelText: 'Going to',
+            includeSaved: true,
+            clearAfterPick: true,
+            enabled: start != null,
+            busy: _busy,
+            biasNear: home,
+            onPicked: _onPicked,
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _busy || home == null || start == null || atHome
+                ? null
+                : _returnHome,
+            icon: const Icon(Icons.home_outlined),
+            label: Text('Return to ${home?.label ?? 'home'}'),
+          ),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Text('Today', style: Theme.of(context).textTheme.titleMedium),
+              const Spacer(),
+              Text(
+                _miles(totalToday),
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ],
+          ),
+          const Divider(),
+          if (waitingUpload > 0)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
                 children: [
-                  Text('Today', style: Theme.of(context).textTheme.titleMedium),
-                  const Spacer(),
-                  Text(
-                    _miles(totalToday),
-                    style: Theme.of(context).textTheme.titleMedium,
+                  Icon(
+                    Icons.cloud_upload_outlined,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      waitingUpload == 1
+                          ? '1 trip waiting to upload to your spreadsheet'
+                          : '$waitingUpload trips waiting to upload to '
+                                'your spreadsheet',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                   ),
                 ],
               ),
-              const Divider(),
-              if (waitingUpload > 0)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.cloud_upload_outlined,
-                        size: 18,
-                        color: Theme.of(context).colorScheme.outline,
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          waitingUpload == 1
-                              ? '1 trip waiting to upload to your spreadsheet'
-                              : '$waitingUpload trips waiting to upload to '
-                                    'your spreadsheet',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ),
-                    ],
-                  ),
+            ),
+          if (today.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Text('No trips logged yet today.'),
+            ),
+          for (final trip in today.reversed)
+            Dismissible(
+              key: ValueKey(trip.id),
+              direction: DismissDirection.endToStart,
+              background: Container(
+                alignment: Alignment.centerRight,
+                padding: const EdgeInsets.only(right: 16),
+                color: Theme.of(context).colorScheme.errorContainer,
+                child: const Icon(Icons.delete_outline),
+              ),
+              onDismissed: (_) => _deleteTrip(trip),
+              child: ListTile(
+                title: Text('${trip.from.label} → ${trip.to.label}'),
+                subtitle: Text(
+                  TimeOfDay.fromDateTime(trip.date.toLocal()).format(context),
                 ),
-              if (today.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 24),
-                  child: Center(child: Text('No trips logged yet today.')),
+                trailing: Text(
+                  trip.estimated
+                      ? '${_miles(trip.miles)} est.'
+                      : _miles(trip.miles),
+                  style: Theme.of(context).textTheme.titleSmall,
                 ),
-              for (final trip in today.reversed)
-                Dismissible(
-                  key: ValueKey(trip.id),
-                  direction: DismissDirection.endToStart,
-                  background: Container(
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.only(right: 16),
-                    color: Theme.of(context).colorScheme.errorContainer,
-                    child: const Icon(Icons.delete_outline),
-                  ),
-                  onDismissed: (_) => _deleteTrip(trip),
-                  child: ListTile(
-                    title: Text('${trip.from.label} → ${trip.to.label}'),
-                    subtitle: Text(
-                      TimeOfDay.fromDateTime(trip.date.toLocal())
-                          .format(context),
-                    ),
-                    trailing: Text(
-                      trip.estimated
-                          ? '${_miles(trip.miles)} est.'
-                          : _miles(trip.miles),
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                  ),
-                ),
-              const SizedBox(height: 32),
-              const DonationCentersSection(),
-            ],
-          ),
-        ),
+              ),
+            ),
+          const SizedBox(height: 32),
+          const DonationCentersSection(),
+        ],
       ),
     );
   }

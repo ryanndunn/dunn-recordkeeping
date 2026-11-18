@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -12,6 +13,7 @@ import '../../models/saved_address.dart';
 import '../../state/providers.dart';
 import '../../widgets/address_search_field.dart';
 import '../../widgets/client_dialog.dart' show looksLikeEmail;
+import '../../widgets/page_body.dart';
 import '../../services/client_jobs.dart';
 import '../../services/jobs.dart' show formatClock, formatHours;
 import 'client_status.dart';
@@ -47,6 +49,7 @@ Uri directionsUri(String address, String? placeId) {
 
 /// Suggested names for a client's other addresses.
 const locationLabelSuggestions = [
+  'Home',
   'Second home',
   'Vacation home',
   'Storage unit',
@@ -58,21 +61,52 @@ String clientInitials(String name) {
   return words.take(2).map((w) => w[0].toUpperCase()).join();
 }
 
-/// One client's page: how to reach them, their details (tap any to edit)
-/// and the trips logged to their address.
-class ClientPage extends ConsumerWidget {
+/// Wide windows (the Mac) show the client list beside the page.
+const _sidebarBreakpoint = 900.0;
+
+/// One client's page: how to reach them, their details (tap any to edit),
+/// notes and sessions. The other clients are a tap away: in a sidebar on
+/// wide windows, or behind the people button on a phone.
+class ClientPage extends ConsumerStatefulWidget {
   const ClientPage({super.key, required this.clientId});
 
   final String clientId;
 
-  Future<void> _save(WidgetRef ref, SavedAddress updated) =>
-      ref.read(addressesProvider.notifier).replace(updated);
+  @override
+  ConsumerState<ClientPage> createState() => _ClientPageState();
+}
 
-  Future<void> _delete(
-    BuildContext context,
-    WidgetRef ref,
-    SavedAddress c,
+class _ClientPageState extends ConsumerState<ClientPage> {
+  late String _id = widget.clientId;
+  final _scaffold = GlobalKey<ScaffoldState>();
+
+  /// Kept so a save still lands after the page closes (e.g. notes typed
+  /// just before going back).
+  late final ProviderContainer _container = ProviderScope.containerOf(
+    context,
+    listen: false,
+  );
+
+  /// Saves a change to client [id], applied to its latest version (so a
+  /// change synced from the other device meanwhile isn't undone).
+  Future<void> _change(
+    String id,
+    SavedAddress Function(SavedAddress c) edit,
   ) async {
+    final latest = _container
+        .read(addressesProvider)
+        .where((c) => c.id == id)
+        .firstOrNull;
+    if (latest == null) return;
+    await _container.read(addressesProvider.notifier).replace(edit(latest));
+  }
+
+  void _pick(String id) {
+    _scaffold.currentState?.closeEndDrawer();
+    if (id != _id) setState(() => _id = id);
+  }
+
+  Future<void> _delete(SavedAddress c) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -90,24 +124,133 @@ class ClientPage extends ConsumerWidget {
         ],
       ),
     );
-    if (ok != true || !context.mounted) return;
+    if (ok != true || !mounted) return;
     Navigator.of(context).pop();
     await ref.read(addressesProvider.notifier).remove(c.id);
   }
 
   @override
+  Widget build(BuildContext context) {
+    final all = ref.watch(addressesProvider);
+    final client = all.where((c) => c.id == _id).firstOrNull;
+    final wide = MediaQuery.sizeOf(context).width >= _sidebarBreakpoint;
+    final sidebar = _ClientSidebar(clients: all, currentId: _id, onPick: _pick);
+
+    final Widget content = client == null
+        // Deleted (possibly on the other device) while open.
+        ? const Padding(
+            padding: EdgeInsets.all(24),
+            child: Text('This client was deleted.'),
+          )
+        : _ClientDetails(
+            key: ValueKey(client.id),
+            client: client,
+            change: (edit) => _change(client.id, edit),
+          );
+
+    return Scaffold(
+      key: _scaffold,
+      appBar: AppBar(
+        title: Text(client?.name ?? ''),
+        actions: [
+          if (!wide)
+            IconButton(
+              tooltip: 'Other clients',
+              icon: const Icon(Icons.people_alt_outlined),
+              onPressed: () => _scaffold.currentState?.openEndDrawer(),
+            ),
+          if (client != null)
+            IconButton(
+              tooltip: 'Delete client',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: () => _delete(client),
+            ),
+        ],
+      ),
+      endDrawer: wide ? null : Drawer(child: SafeArea(child: sidebar)),
+      body: wide
+          ? Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(width: 280, child: sidebar),
+                const VerticalDivider(width: 1),
+                Expanded(child: content),
+              ],
+            )
+          : content,
+    );
+  }
+}
+
+/// Every current client (and the open one, even if archived), by name.
+class _ClientSidebar extends StatelessWidget {
+  const _ClientSidebar({
+    required this.clients,
+    required this.currentId,
+    required this.onPick,
+  });
+
+  final List<SavedAddress> clients;
+  final String currentId;
+  final void Function(String id) onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final shown = [
+      for (final c in clients)
+        if (c.status != ClientStatus.archived || c.id == currentId) c,
+    ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return Material(
+      color: theme.colorScheme.surfaceContainerLow,
+      child: ListView(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: Text(
+              'Clients',
+              style: theme.textTheme.titleSmall?.copyWith(
+                color: theme.colorScheme.primary,
+              ),
+            ),
+          ),
+          for (final c in shown)
+            ListTile(
+              dense: true,
+              selected: c.id == currentId,
+              selectedTileColor: theme.colorScheme.secondaryContainer,
+              shape: const StadiumBorder(),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+              leading: CircleAvatar(
+                radius: 16,
+                backgroundColor: statusColors(c.status, theme.colorScheme).bg,
+                foregroundColor: statusColors(c.status, theme.colorScheme).fg,
+                child: Text(
+                  clientInitials(c.name),
+                  style: theme.textTheme.labelMedium,
+                ),
+              ),
+              title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(c.status.label),
+              onTap: () => onPick(c.id),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The page itself for one client.
+class _ClientDetails extends ConsumerWidget {
+  const _ClientDetails({super.key, required this.client, required this.change});
+
+  final SavedAddress client;
+  final Future<void> Function(SavedAddress Function(SavedAddress c) edit)
+  change;
+
+  @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final client = ref
-        .watch(addressesProvider)
-        .where((c) => c.id == clientId)
-        .firstOrNull;
-    if (client == null) {
-      // Deleted (possibly on the other device) while open.
-      return Scaffold(
-        appBar: AppBar(),
-        body: const Center(child: Text('This client was deleted.')),
-      );
-    }
     final c = client;
     final now = ref.read(clockProvider)();
     final jobs = clientJobs(
@@ -117,215 +260,341 @@ class ClientPage extends ConsumerWidget {
       now: now,
     );
 
-    Future<void> saveLocations(List<ClientLocation> next) =>
-        _save(ref, c.copyWith(locations: next));
+    Future<void> save(SavedAddress Function(SavedAddress c) edit) =>
+        change(edit);
+    Future<void> saveAddresses(
+      List<ClientLocation> Function(List<ClientLocation> current) edit,
+    ) => change((x) => x.withAddresses(edit(x.allAddresses)));
+    Future<void> saveContacts(
+      List<ClientContact> Function(List<ClientContact> current) edit,
+    ) => change((x) => x.copyWith(contacts: edit(x.contacts)));
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(c.name),
-        actions: [
-          IconButton(
-            tooltip: 'Delete client',
-            icon: const Icon(Icons.delete_outline),
-            onPressed: () => _delete(context, ref, c),
-          ),
-        ],
-      ),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 640),
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+    final signed = c.policiesSignedOn != null;
+    final policyDoc = [
+      _SectionTitle('Policy doc'),
+      _PolicyDocCard(client: c, today: now, onSave: (u) => save((_) => u)),
+    ];
+    final addresses = c.allAddresses;
+
+    return PageListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+      children: [
+        _Header(
+          key: ValueKey('header-${c.id}'),
+          client: c,
+          onStatus: (next) => save((x) => withStatus(x, next, now)),
+          onRename: (name) => save((x) => x.copyWith(name: name)),
+        ),
+        const SizedBox(height: 16),
+        _ContactButtons(client: c),
+        if (!signed) ...[const SizedBox(height: 24), ...policyDoc],
+        const SizedBox(height: 24),
+        _SectionTitle('Notes'),
+        _NotesField(
+          initial: c.notes,
+          onSave: (v) => save((x) => x.copyWith(notes: v)),
+        ),
+        const SizedBox(height: 24),
+        _SectionTitle('Contacts'),
+        Card.outlined(
+          margin: EdgeInsets.zero,
+          clipBehavior: Clip.antiAlias,
+          child: Column(
             children: [
-              _Header(client: c),
-              const SizedBox(height: 16),
-              _ContactButtons(client: c),
-              const SizedBox(height: 24),
-              _SectionTitle('Status'),
-              _StatusCard(
-                client: c,
-                today: ref.read(clockProvider)(),
-                onSave: (updated) => _save(ref, updated),
+              _EditableText(
+                key: ValueKey('phone-${c.id}'),
+                label: 'Phone',
+                icon: Icons.phone_outlined,
+                value: c.phone,
+                placeholder: 'Add a phone number',
+                keyboardType: TextInputType.phone,
+                inputFormatters: [_phoneChars],
+                onSave: (v) => save((x) => x.copyWith(phone: v)),
               ),
-              const SizedBox(height: 24),
-              _SectionTitle('Policy doc'),
-              _PolicyDocCard(
-                client: c,
-                today: ref.read(clockProvider)(),
-                onSave: (updated) => _save(ref, updated),
+              const Divider(height: 1),
+              _EditableText(
+                key: ValueKey('email-${c.id}'),
+                label: 'Email',
+                icon: Icons.email_outlined,
+                value: c.email,
+                placeholder: 'Add an email address',
+                keyboardType: TextInputType.emailAddress,
+                validate: _checkEmail,
+                onSave: (v) => save((x) => x.copyWith(email: v)),
               ),
-              const SizedBox(height: 24),
-              _SectionTitle('Details'),
-              Card.outlined(
-                clipBehavior: Clip.antiAlias,
-                child: Column(
-                  children: [
-                    _EditableText(
-                      key: ValueKey('name-${c.id}'),
-                      label: 'Name',
-                      icon: Icons.person_outline,
-                      value: c.name,
-                      capitalization: TextCapitalization.words,
-                      validate: (v) => v.isEmpty ? 'Required' : null,
-                      onSave: (v) => _save(ref, c.copyWith(name: v)),
-                    ),
-                    const Divider(height: 1),
-                    _EditableText(
-                      key: ValueKey('phone-${c.id}'),
-                      label: 'Phone',
-                      icon: Icons.phone_outlined,
-                      value: c.phone,
-                      placeholder: 'Add a phone number',
-                      keyboardType: TextInputType.phone,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.allow(
-                          RegExp(r'[0-9+()\-. x]'),
-                        ),
-                      ],
-                      onSave: (v) => _save(ref, c.copyWith(phone: v)),
-                    ),
-                    const Divider(height: 1),
-                    _EditableText(
-                      key: ValueKey('email-${c.id}'),
-                      label: 'Email',
-                      icon: Icons.email_outlined,
-                      value: c.email,
-                      placeholder: 'Add an email address',
-                      keyboardType: TextInputType.emailAddress,
-                      validate: (v) => v.isNotEmpty && !looksLikeEmail(v)
-                          ? 'Check the email address'
-                          : null,
-                      onSave: (v) => _save(ref, c.copyWith(email: v)),
-                    ),
-                    const Divider(height: 1),
-                    _EditableText(
-                      key: ValueKey('rate-${c.id}'),
-                      label: 'Hourly rate',
-                      icon: Icons.attach_money,
-                      value: rateText(c.hourlyRate),
-                      display: (v) => '${formatDollars(c.hourlyRate)} per hour',
-                      prefixText: '\$ ',
-                      suffixText: '/ hour',
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
-                      inputFormatters: [
-                        FilteringTextInputFormatter.allow(RegExp(r'[0-9.,$]')),
-                      ],
-                      validate: (v) =>
-                          parseRate(v) == null ? 'Enter an amount' : null,
-                      onSave: (v) =>
-                          _save(ref, c.copyWith(hourlyRate: parseRate(v))),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-              _SectionTitle('Addresses'),
-              Card.outlined(
-                clipBehavior: Clip.antiAlias,
-                child: Column(
-                  children: [
-                    _EditableAddress(
-                      key: ValueKey('address-${c.id}'),
-                      client: c,
-                      onSave: (p) => _save(
-                        ref,
-                        c.copyWith(
-                          address: p.address,
-                          placeId: p.placeId,
-                          lat: p.lat,
-                          lng: p.lng,
-                        ),
-                      ),
-                    ),
-                    for (final l in c.locations) ...[
-                      const Divider(height: 1),
-                      _LocationRow(
-                        key: ValueKey('location-${l.id}'),
-                        location: l,
-                        onSave: (updated) => saveLocations([
-                          for (final x in c.locations)
-                            x.id == l.id ? updated : x,
-                        ]),
-                        onRemove: () => saveLocations([
-                          for (final x in c.locations)
-                            if (x.id != l.id) x,
-                        ]),
-                      ),
+              for (final p in c.contacts) ...[
+                const Divider(height: 1),
+                _ContactRow(
+                  key: ValueKey('contact-${p.id}'),
+                  contact: p,
+                  onSave: (updated) => saveContacts(
+                    (all) => [for (final x in all) x.id == p.id ? updated : x],
+                  ),
+                  onRemove: () => saveContacts(
+                    (all) => [
+                      for (final x in all)
+                        if (x.id != p.id) x,
                     ],
-                    const Divider(height: 1),
-                    _AddLocation(
-                      key: ValueKey('add-location-${c.id}'),
-                      onAdd: (label, place) => saveLocations([
-                        ...c.locations,
-                        ClientLocation(
-                          id: _uuid.v4(),
-                          label: label,
-                          address: place.address,
-                          placeId: place.placeId,
-                          lat: place.lat,
-                          lng: place.lng,
-                        ),
-                      ]),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 24),
-              _JobsSection(
-                client: c,
-                entries: jobs,
-                now: now,
-                onSave: (updated) => _save(ref, updated),
+              ],
+              const Divider(height: 1),
+              _AddContact(
+                key: ValueKey('add-contact-${c.id}'),
+                onAdd: (p) => saveContacts((all) => [...all, p]),
               ),
             ],
           ),
         ),
-      ),
+        const SizedBox(height: 24),
+        _SectionTitle('Rate'),
+        Card.outlined(
+          margin: EdgeInsets.zero,
+          clipBehavior: Clip.antiAlias,
+          child: _EditableText(
+            key: ValueKey('rate-${c.id}'),
+            label: 'Hourly rate',
+            icon: Icons.attach_money,
+            value: rateText(c.hourlyRate),
+            display: (v) => '${formatDollars(c.hourlyRate)} per hour',
+            prefixText: '\$ ',
+            suffixText: '/ hour',
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[0-9.,$]')),
+            ],
+            validate: (v) => parseRate(v) == null ? 'Enter an amount' : null,
+            onSave: (v) => save((x) => x.copyWith(hourlyRate: parseRate(v))),
+          ),
+        ),
+        const SizedBox(height: 24),
+        _SectionTitle('Addresses'),
+        Card.outlined(
+          margin: EdgeInsets.zero,
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              for (final (i, l) in addresses.indexed) ...[
+                if (i > 0) const Divider(height: 1),
+                _LocationRow(
+                  key: ValueKey('location-${c.id}-${l.id}'),
+                  location: l,
+                  onSave: (updated) => saveAddresses(
+                    (all) => [for (final x in all) x.id == l.id ? updated : x],
+                  ),
+                  // A client always keeps at least one address.
+                  onRemove: addresses.length < 2
+                      ? null
+                      : () => saveAddresses(
+                          (all) => [
+                            for (final x in all)
+                              if (x.id != l.id) x,
+                          ],
+                        ),
+                ),
+              ],
+              const Divider(height: 1),
+              _AddLocation(
+                key: ValueKey('add-location-${c.id}'),
+                onAdd: (label, place) => saveAddresses(
+                  (all) => [
+                    ...all,
+                    ClientLocation(
+                      id: _uuid.v4(),
+                      label: label,
+                      address: place.address,
+                      placeId: place.placeId,
+                      lat: place.lat,
+                      lng: place.lng,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        _JobsSection(
+          client: c,
+          entries: jobs,
+          now: now,
+          onSave: (edit) => save(edit),
+        ),
+        if (signed) ...[const SizedBox(height: 24), ...policyDoc],
+      ],
     );
   }
 }
 
-class _Header extends StatelessWidget {
-  const _Header({required this.client});
+final _phoneChars = FilteringTextInputFormatter.allow(RegExp(r'[0-9+()\-. x]'));
+
+String? _checkEmail(String v) =>
+    v.isNotEmpty && !looksLikeEmail(v) ? 'Check the email address' : null;
+
+/// [c] moved to status [next]. Finishing the consultation records its day
+/// (today). Changing the status never asks for a date; the signed date
+/// lives in the Policy doc section.
+SavedAddress withStatus(SavedAddress c, ClientStatus next, DateTime today) {
+  final consultationDone =
+      c.status == ClientStatus.consultation &&
+      next == ClientStatus.policyDoc &&
+      c.consultationOn == null;
+  return c.copyWith(
+    status: next,
+    consultationOn: consultationDone
+        ? DateTime(today.year, today.month, today.day)
+        : null,
+  );
+}
+
+/// Avatar, name (with a pencil to rename) and the status menu.
+class _Header extends StatefulWidget {
+  const _Header({
+    super.key,
+    required this.client,
+    required this.onStatus,
+    required this.onRename,
+  });
   final SavedAddress client;
+  final void Function(ClientStatus next) onStatus;
+  final Future<void> Function(String name) onRename;
+
+  @override
+  State<_Header> createState() => _HeaderState();
+}
+
+class _HeaderState extends State<_Header> {
+  final _name = TextEditingController();
+  bool _editing = false;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  void _start() => setState(() {
+    _name.text = widget.client.name;
+    _name.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _name.text.length,
+    );
+    _editing = true;
+  });
+
+  Future<void> _submit() async {
+    final v = _name.text.trim();
+    if (v.isEmpty) return;
+    setState(() => _editing = false);
+    if (v != widget.client.name) await widget.onRename(v);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final client = widget.client;
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    return Column(
+    final status = client.status;
+    final Widget name = _editing
+        ? CallbackShortcuts(
+            bindings: {
+              const SingleActivator(LogicalKeyboardKey.escape): () =>
+                  setState(() => _editing = false),
+            },
+            child: TextField(
+              controller: _name,
+              autofocus: true,
+              textCapitalization: TextCapitalization.words,
+              style: theme.textTheme.titleLarge,
+              decoration: InputDecoration(
+                labelText: 'Name',
+                isDense: true,
+                suffixIcon: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Cancel',
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() => _editing = false),
+                    ),
+                    IconButton(
+                      tooltip: 'Save name',
+                      icon: Icon(Icons.check, color: scheme.primary),
+                      onPressed: _submit,
+                    ),
+                  ],
+                ),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+          )
+        : InkWell(
+            onTap: _start,
+            borderRadius: BorderRadius.circular(8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    client.name,
+                    style: theme.textTheme.headlineSmall,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Tooltip(
+                  message: 'Edit name',
+                  child: Icon(
+                    Icons.edit_outlined,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          );
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         CircleAvatar(
-          radius: 40,
+          radius: 32,
           backgroundColor: client.isVerified
               ? scheme.primaryContainer
               : scheme.errorContainer,
           child: client.isVerified
               ? Text(
                   clientInitials(client.name),
-                  style: theme.textTheme.headlineSmall?.copyWith(
+                  style: theme.textTheme.titleLarge?.copyWith(
                     color: scheme.onPrimaryContainer,
                   ),
                 )
-              : Icon(Icons.warning_amber, size: 36, color: scheme.error),
+              : Icon(Icons.warning_amber, size: 30, color: scheme.error),
         ),
-        const SizedBox(height: 12),
-        Text(
-          client.name,
-          style: theme.textTheme.headlineSmall,
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 6),
-        ClientStatusBadge(client: client),
-        const SizedBox(height: 6),
-        Text(
-          client.address,
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: scheme.onSurfaceVariant,
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              name,
+              const SizedBox(height: 6),
+              PopupMenuButton<ClientStatus>(
+                tooltip: 'Change status',
+                onSelected: widget.onStatus,
+                itemBuilder: (_) => [
+                  for (final s in ClientStatus.values)
+                    PopupMenuItem(
+                      value: s,
+                      child: ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(statusIcon(s)),
+                        title: Text(s.label),
+                        trailing: s == status ? const Icon(Icons.check) : null,
+                      ),
+                    ),
+                ],
+                child: ClientStatusBadge(client: client, dropdown: true),
+              ),
+            ],
           ),
-          textAlign: TextAlign.center,
         ),
       ],
     );
@@ -338,10 +607,42 @@ class _ContactButtons extends StatelessWidget {
   const _ContactButtons({required this.client});
   final SavedAddress client;
 
+  /// Directions to the only address, or a choice of them.
+  Future<void> _directions(BuildContext context) async {
+    final all = client.allAddresses;
+    final l = all.length == 1
+        ? all.single
+        : await showModalBottomSheet<ClientLocation>(
+            context: context,
+            showDragHandle: true,
+            builder: (context) => SafeArea(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final l in all)
+                    ListTile(
+                      leading: const Icon(Icons.directions_outlined),
+                      title: Text(addressTitle(l)),
+                      subtitle: Text(l.address),
+                      onTap: () => Navigator.pop(context, l),
+                    ),
+                ],
+              ),
+            ),
+          );
+    if (l == null || !context.mounted) return;
+    await openClientLink(context, directionsUri(l.address, l.placeId));
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = client;
-    Widget button(IconData icon, String label, Uri? uri) => Expanded(
+    Widget button(
+      IconData icon,
+      String label,
+      Uri? uri, {
+      VoidCallback? onPressed,
+    }) => Expanded(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4),
         child: FilledButton.tonal(
@@ -351,7 +652,9 @@ class _ContactButtons extends StatelessWidget {
               borderRadius: BorderRadius.circular(16),
             ),
           ),
-          onPressed: uri == null ? null : () => openClientLink(context, uri),
+          onPressed:
+              onPressed ??
+              (uri == null ? null : () => openClientLink(context, uri)),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -383,148 +686,88 @@ class _ContactButtons extends StatelessWidget {
         button(
           Icons.directions_outlined,
           'Directions',
-          directionsUri(c.address, c.placeId),
+          null,
+          onPressed: () => _directions(context),
         ),
       ],
     );
   }
 }
 
-/// Where the client is (new → consultation → policy doc → active), with a
-/// button for the next step and a menu to set any status. Changing the
-/// status never asks for a date; the signed date lives in the Policy doc
-/// section.
-class _StatusCard extends StatelessWidget {
-  const _StatusCard({
-    required this.client,
-    required this.today,
-    required this.onSave,
-  });
+/// Notes about the client, saved as you type.
+class _NotesField extends StatefulWidget {
+  const _NotesField({required this.initial, required this.onSave});
 
-  final SavedAddress client;
-  final DateTime today;
-  final Future<void> Function(SavedAddress updated) onSave;
-
-  Future<void> _moveTo(ClientStatus next) {
-    final c = client;
-    // Finishing the consultation records its day (today).
-    final consultationDone =
-        c.status == ClientStatus.consultation &&
-        next == ClientStatus.policyDoc &&
-        c.consultationOn == null;
-    return onSave(
-      c.copyWith(
-        status: next,
-        consultationOn: consultationDone
-            ? DateTime(today.year, today.month, today.day)
-            : null,
-      ),
-    );
-  }
-
-  /// Back from the archive to where the client left off.
-  ClientStatus get _restoreTo => client.policiesSignedOn != null
-      ? ClientStatus.active
-      : client.consultationOn != null
-      ? ClientStatus.policyDoc
-      : ClientStatus.newClient;
+  final String initial;
+  final Future<void> Function(String notes) onSave;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final c = client;
-    final status = c.status;
-    final colors = statusColors(status, theme.colorScheme);
+  State<_NotesField> createState() => _NotesFieldState();
+}
 
-    final (
-      String detail,
-      String? action,
-      ClientStatus? next,
-    ) = switch (status) {
-      ClientStatus.newClient => (
-        'Next: book the free 30-minute consultation',
-        'Consultation booked',
-        ClientStatus.consultation,
-      ),
-      ClientStatus.consultation => (
-        'Free 30-minute consultation, in person',
-        'Consultation done',
-        ClientStatus.policyDoc,
-      ),
-      ClientStatus.policyDoc => (
-        [
-          if (c.consultationOn != null)
-            'Consultation ${formatShortDate(c.consultationOn!)}',
-          'Mark the policy doc signed below to make them active',
-        ].join(' · '),
-        null,
-        null,
-      ),
-      ClientStatus.active => ('Current client', null, null),
-      ClientStatus.archived => (
-        'Not a current client. Trips there aren\'t treated as client '
-            'visits.',
-        'Restore',
-        _restoreTo,
-      ),
-    };
+class _NotesFieldState extends State<_NotesField> {
+  late final _controller = TextEditingController(text: widget.initial);
+  final _focus = FocusNode();
+  Timer? _pending;
+  late String _saved = widget.initial;
 
-    return Card.filled(
-      color: colors.bg,
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 4, 12),
-        child: Row(
-          children: [
-            Icon(statusIcon(status), color: colors.fg),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    status.label,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      color: colors.fg,
-                    ),
-                  ),
-                  Text(detail, style: TextStyle(color: colors.fg)),
-                  if (action != null && next != null) ...[
-                    const SizedBox(height: 8),
-                    FilledButton(
-                      onPressed: () => _moveTo(next),
-                      child: Text(action),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            PopupMenuButton<ClientStatus>(
-              tooltip: 'Change status',
-              iconColor: colors.fg,
-              onSelected: _moveTo,
-              itemBuilder: (_) => [
-                for (final s in ClientStatus.values)
-                  if (s != status)
-                    PopupMenuItem(
-                      value: s,
-                      child: ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(statusIcon(s)),
-                        title: Text(
-                          s == ClientStatus.archived
-                              ? 'Archive'
-                              : 'Set to ${s.label}',
-                        ),
-                      ),
-                    ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(() {
+      if (!_focus.hasFocus) _saveNow();
+    });
   }
+
+  @override
+  void didUpdateWidget(_NotesField old) {
+    super.didUpdateWidget(old);
+    // Changed on the other device: show it, unless typing here.
+    if (!_focus.hasFocus &&
+        widget.initial != _saved &&
+        widget.initial != _controller.text) {
+      _controller.text = widget.initial;
+      _saved = widget.initial;
+    }
+  }
+
+  void _saveNow() {
+    _pending?.cancel();
+    _pending = null;
+    final text = _controller.text.trimRight();
+    if (text == _saved) return;
+    _saved = text;
+    widget.onSave(text);
+  }
+
+  @override
+  void dispose() {
+    _saveNow();
+    _controller.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => TextField(
+    controller: _controller,
+    focusNode: _focus,
+    minLines: 4,
+    maxLines: 12,
+    keyboardType: TextInputType.multiline,
+    textCapitalization: TextCapitalization.sentences,
+    decoration: const InputDecoration(
+      hintText:
+          'Anything to remember: preferences, access, what they\'re '
+          'keeping…',
+      border: OutlineInputBorder(),
+      helperText: 'Saved as you type',
+    ),
+    onChanged: (_) {
+      _pending?.cancel();
+      _pending = Timer(const Duration(milliseconds: 800), _saveNow);
+    },
+  );
 }
 
 /// Whether (and when) the client signed the policies document. Marking it
@@ -582,9 +825,13 @@ class _PolicyDocCard extends StatelessWidget {
           leading: const Icon(Icons.edit_document),
           title: const Text('Not signed yet'),
           subtitle: Text(
-            _archived
-                ? 'Signing won\'t change the archived status.'
-                : 'Signing makes the client active.',
+            [
+              if (client.consultationOn != null)
+                'Consultation ${formatShortDate(client.consultationOn!)}',
+              _archived
+                  ? 'Signing won\'t change the archived status.'
+                  : 'Signing makes the client active.',
+            ].join(' · '),
           ),
           trailing: FilledButton(
             onPressed: () => _pickSignedDay(context),
@@ -644,7 +891,6 @@ class _EditableText extends StatefulWidget {
     this.validate,
     this.keyboardType,
     this.inputFormatters,
-    this.capitalization = TextCapitalization.none,
     this.display,
     this.prefixText,
     this.suffixText,
@@ -658,7 +904,6 @@ class _EditableText extends StatefulWidget {
   final Future<void> Function(String value) onSave;
   final TextInputType? keyboardType;
   final List<TextInputFormatter>? inputFormatters;
-  final TextCapitalization capitalization;
 
   /// How [value] reads when not editing (default: as is).
   final String Function(String value)? display;
@@ -715,7 +960,6 @@ class _EditableTextState extends State<_EditableText> {
             autofocus: true,
             keyboardType: widget.keyboardType,
             inputFormatters: widget.inputFormatters,
-            textCapitalization: widget.capitalization,
             autocorrect: widget.keyboardType != TextInputType.emailAddress,
             decoration: InputDecoration(
               labelText: widget.label,
@@ -767,81 +1011,249 @@ class _EditableTextState extends State<_EditableText> {
   }
 }
 
-/// The client's address; editing means picking a new one from Google Maps.
-class _EditableAddress extends StatefulWidget {
-  const _EditableAddress({
+/// Someone else to reach about the client, with call and email buttons.
+/// Tap the row to edit or remove them.
+class _ContactRow extends StatefulWidget {
+  const _ContactRow({
     super.key,
-    required this.client,
+    required this.contact,
     required this.onSave,
+    required this.onRemove,
   });
 
-  final SavedAddress client;
-  final Future<void> Function(Place place) onSave;
+  final ClientContact contact;
+  final Future<void> Function(ClientContact updated) onSave;
+  final Future<void> Function() onRemove;
 
   @override
-  State<_EditableAddress> createState() => _EditableAddressState();
+  State<_ContactRow> createState() => _ContactRowState();
 }
 
-class _EditableAddressState extends State<_EditableAddress> {
+class _ContactRowState extends State<_ContactRow> {
   bool _editing = false;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final c = widget.client;
+    final p = widget.contact;
     if (_editing) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            AddressSearchField(
-              labelText: 'New address',
-              autofocus: true,
-              onPicked: (place, _) async {
-                setState(() => _editing = false);
-                await widget.onSave(place);
-              },
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: () => setState(() => _editing = false),
-                child: const Text('Cancel'),
-              ),
-            ),
-          ],
-        ),
+      return _ContactEditor(
+        initial: p,
+        onCancel: () => setState(() => _editing = false),
+        onSave: (updated) async {
+          setState(() => _editing = false);
+          await widget.onSave(updated);
+        },
+        onRemove: () async {
+          setState(() => _editing = false);
+          await widget.onRemove();
+        },
       );
     }
+    final details = [p.phone, p.email].where((x) => x.isNotEmpty).join('\n');
     return ListTile(
       onTap: () => setState(() => _editing = true),
-      leading: Icon(
-        c.isVerified ? Icons.place_outlined : Icons.warning_amber,
-        color: c.isVerified ? null : scheme.error,
-      ),
-      title: const Text('Main address'),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      leading: const Icon(Icons.person_outline),
+      title: Text(p.name),
+      subtitle: details.isEmpty ? null : Text(details),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(c.address),
-          if (!c.isVerified)
-            Text(
-              'Not verified. Tap to pick it from Google Maps.',
-              style: TextStyle(color: scheme.error),
+          if (p.phone.isNotEmpty)
+            IconButton(
+              tooltip: 'Call ${p.name}',
+              icon: const Icon(Icons.phone_outlined),
+              onPressed: () =>
+                  openClientLink(context, Uri(scheme: 'tel', path: p.phone)),
+            ),
+          if (p.email.isNotEmpty)
+            IconButton(
+              tooltip: 'Email ${p.name}',
+              icon: const Icon(Icons.email_outlined),
+              onPressed: () =>
+                  openClientLink(context, Uri(scheme: 'mailto', path: p.email)),
             ),
         ],
-      ),
-      trailing: IconButton(
-        tooltip: 'Edit main address',
-        icon: const Icon(Icons.edit_outlined),
-        onPressed: () => setState(() => _editing = true),
       ),
     );
   }
 }
 
-/// One of the client's other addresses. Tap to rename, move or remove it.
+/// "Add a contact" button, which opens an empty editor.
+class _AddContact extends StatefulWidget {
+  const _AddContact({super.key, required this.onAdd});
+
+  final Future<void> Function(ClientContact contact) onAdd;
+
+  @override
+  State<_AddContact> createState() => _AddContactState();
+}
+
+class _AddContactState extends State<_AddContact> {
+  bool _adding = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_adding) {
+      return _ContactEditor(
+        onCancel: () => setState(() => _adding = false),
+        onSave: (p) async {
+          setState(() => _adding = false);
+          await widget.onAdd(p);
+        },
+      );
+    }
+    final primary = Theme.of(context).colorScheme.primary;
+    return ListTile(
+      onTap: () => setState(() => _adding = true),
+      leading: Icon(Icons.person_add_alt_1_outlined, color: primary),
+      title: Text('Add a contact', style: TextStyle(color: primary)),
+      subtitle: const Text('Spouse, family member, who pays, …'),
+    );
+  }
+}
+
+/// Name, phone and email for another contact.
+class _ContactEditor extends StatefulWidget {
+  const _ContactEditor({
+    required this.onSave,
+    required this.onCancel,
+    this.onRemove,
+    this.initial,
+  });
+
+  final ClientContact? initial;
+  final Future<void> Function(ClientContact contact) onSave;
+  final VoidCallback onCancel;
+  final Future<void> Function()? onRemove;
+
+  @override
+  State<_ContactEditor> createState() => _ContactEditorState();
+}
+
+class _ContactEditorState extends State<_ContactEditor> {
+  late final _name = TextEditingController(text: widget.initial?.name ?? '');
+  late final _phone = TextEditingController(text: widget.initial?.phone ?? '');
+  late final _email = TextEditingController(text: widget.initial?.email ?? '');
+  String? _emailError;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _phone.dispose();
+    _email.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final email = _email.text.trim();
+    final error = _checkEmail(email);
+    if (error != null) {
+      setState(() => _emailError = error);
+      return;
+    }
+    final name = _name.text.trim();
+    final phone = _phone.text.trim();
+    widget.onSave(
+      widget.initial?.copyWith(name: name, phone: phone, email: email) ??
+          ClientContact(id: _uuid.v4(), name: name, phone: phone, email: email),
+    );
+  }
+
+  Future<void> _confirmRemove() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Remove "${widget.initial!.name}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) await widget.onRemove!();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _name,
+            autofocus: widget.initial == null,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Contact name',
+              prefixIcon: Icon(Icons.person_outline),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _phone,
+            keyboardType: TextInputType.phone,
+            inputFormatters: [_phoneChars],
+            decoration: const InputDecoration(
+              labelText: 'Phone (optional)',
+              prefixIcon: Icon(Icons.phone_outlined),
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _email,
+            keyboardType: TextInputType.emailAddress,
+            autocorrect: false,
+            decoration: InputDecoration(
+              labelText: 'Email (optional)',
+              prefixIcon: const Icon(Icons.email_outlined),
+              errorText: _emailError,
+            ),
+            onChanged: (_) {
+              if (_emailError != null) setState(() => _emailError = null);
+            },
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              if (widget.onRemove != null)
+                IconButton(
+                  tooltip: 'Remove this contact',
+                  color: scheme.error,
+                  onPressed: _confirmRemove,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              const Spacer(),
+              TextButton(
+                onPressed: widget.onCancel,
+                child: const Text('Cancel'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _name.text.trim().isEmpty ? null : _save,
+                child: Text(widget.initial == null ? 'Add' : 'Save'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// What an address is called on screen: its label, or "Address".
+String addressTitle(ClientLocation l) => l.label.isEmpty ? 'Address' : l.label;
+
+/// One of the client's addresses (all equal). Tap to rename, move or
+/// remove it ([onRemove] is null for the only address).
 class _LocationRow extends StatefulWidget {
   const _LocationRow({
     super.key,
@@ -852,7 +1264,7 @@ class _LocationRow extends StatefulWidget {
 
   final ClientLocation location;
   final Future<void> Function(ClientLocation updated) onSave;
-  final Future<void> Function() onRemove;
+  final Future<void> Function()? onRemove;
 
   @override
   State<_LocationRow> createState() => _LocationRowState();
@@ -872,28 +1284,45 @@ class _LocationRowState extends State<_LocationRow> {
           setState(() => _editing = false);
           await widget.onSave(l.copyWith(label: label, place: place));
         },
-        onRemove: () async {
-          setState(() => _editing = false);
-          await widget.onRemove();
-        },
+        onRemove: widget.onRemove == null
+            ? null
+            : () async {
+                setState(() => _editing = false);
+                await widget.onRemove!();
+              },
       );
     }
+    final scheme = Theme.of(context).colorScheme;
+    final verified = l.placeId != null;
     return ListTile(
       onTap: () => setState(() => _editing = true),
-      leading: const Icon(Icons.place_outlined),
-      title: Text(l.label),
-      subtitle: Text(l.address),
+      leading: Icon(
+        verified ? Icons.place_outlined : Icons.warning_amber,
+        color: verified ? null : scheme.error,
+      ),
+      title: Text(addressTitle(l)),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(l.address),
+          if (!verified)
+            Text(
+              'Not verified. Tap to pick it from Google Maps.',
+              style: TextStyle(color: scheme.error),
+            ),
+        ],
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton(
-            tooltip: 'Directions to ${l.label}',
+            tooltip: 'Directions to ${addressTitle(l)}',
             icon: const Icon(Icons.directions_outlined),
             onPressed: () =>
                 openClientLink(context, directionsUri(l.address, l.placeId)),
           ),
           IconButton(
-            tooltip: 'Edit ${l.label}',
+            tooltip: 'Edit ${addressTitle(l)}',
             icon: const Icon(Icons.edit_outlined),
             onPressed: () => setState(() => _editing = true),
           ),
@@ -934,7 +1363,7 @@ class _AddLocationState extends State<_AddLocation> {
         color: Theme.of(context).colorScheme.primary,
       ),
       title: Text(
-        'Add another address',
+        'Add an address',
         style: TextStyle(color: Theme.of(context).colorScheme.primary),
       ),
       subtitle: const Text('Second home, storage unit, …'),
@@ -942,7 +1371,7 @@ class _AddLocationState extends State<_AddLocation> {
   }
 }
 
-/// Name and Google-picked address for one of the client's other
+/// Name (optional) and Google-picked address for one of the client's
 /// addresses. [initial] is set when editing an existing one.
 class _LocationEditor extends StatefulWidget {
   const _LocationEditor({
@@ -963,7 +1392,8 @@ class _LocationEditor extends StatefulWidget {
 
 class _LocationEditorState extends State<_LocationEditor> {
   late final _label = TextEditingController(text: widget.initial?.label ?? '');
-  late Place? _picked = widget.initial == null
+  // An address not picked from Google Maps has to be picked again.
+  late Place? _picked = widget.initial?.placeId == null
       ? null
       : Place(
           label: widget.initial!.label,
@@ -979,10 +1409,10 @@ class _LocationEditorState extends State<_LocationEditor> {
     super.dispose();
   }
 
-  bool get _ready => _label.text.trim().isNotEmpty && _picked != null;
+  bool get _ready => _picked != null;
 
   Future<void> _confirmRemove() async {
-    final name = widget.initial!.label;
+    final name = addressTitle(widget.initial!);
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1016,8 +1446,8 @@ class _LocationEditorState extends State<_LocationEditor> {
             autofocus: widget.initial == null,
             textCapitalization: TextCapitalization.sentences,
             decoration: const InputDecoration(
-              labelText: 'What is this place?',
-              hintText: 'e.g. Storage unit',
+              labelText: 'What is this place? (optional)',
+              hintText: 'e.g. Home, Storage unit',
               prefixIcon: Icon(Icons.label_outline),
             ),
             onChanged: (_) => setState(() {}),
@@ -1037,7 +1467,7 @@ class _LocationEditorState extends State<_LocationEditor> {
           const SizedBox(height: 12),
           AddressSearchField(
             labelText: 'Address',
-            initialText: _picked?.address ?? '',
+            initialText: _picked?.address ?? widget.initial?.address ?? '',
             onPicked: (place, _) async => setState(() => _picked = place),
             onEdited: () => setState(() => _picked = null),
           ),
@@ -1086,8 +1516,9 @@ class _LocationEditorState extends State<_LocationEditor> {
   }
 }
 
-/// The client's jobs: booked ahead, running now, and done. Booking a job
-/// here makes it upcoming; the phone records it when you go.
+/// The client's sessions: booked ahead, running now, and done. Each shows
+/// the time with the client, what it bills, and whether it's been billed
+/// and paid (clients pre-pay, so upcoming sessions can be paid too).
 class _JobsSection extends StatefulWidget {
   const _JobsSection({
     required this.client,
@@ -1099,7 +1530,8 @@ class _JobsSection extends StatefulWidget {
   final SavedAddress client;
   final List<ClientJobEntry> entries;
   final DateTime now;
-  final Future<void> Function(SavedAddress updated) onSave;
+  final Future<void> Function(SavedAddress Function(SavedAddress c) edit)
+  onSave;
 
   @override
   State<_JobsSection> createState() => _JobsSectionState();
@@ -1114,27 +1546,86 @@ class _JobsSectionState extends State<_JobsSection> {
   Future<void> _schedule([ScheduledJob? existing]) async {
     final result = await showDialog<_BookingResult>(
       context: context,
-      builder: (_) => _BookingDialog(existing: existing, now: widget.now),
+      builder: (_) => _BookingDialog(
+        existing: existing,
+        now: widget.now,
+        hourlyRate: widget.client.hourlyRate,
+      ),
     );
     if (result == null) return;
-    final c = widget.client;
-    final rest = [
-      for (final s in c.scheduled)
-        if (s.id != existing?.id) s,
-    ];
-    final next = result.delete
-        ? rest
-        : ([
-            ...rest,
-            existing?.copyWith(start: result.start, notes: result.notes) ??
-                ScheduledJob(
-                  id: _uuid.v4(),
-                  start: result.start!,
-                  notes: result.notes,
-                ),
-          ]..sort((a, b) => a.start.compareTo(b.start)));
-    await widget.onSave(c.copyWith(scheduled: next));
+    await widget.onSave((c) {
+      final rest = [
+        for (final s in c.scheduled)
+          if (s.id != existing?.id) s,
+      ];
+      if (result.delete) {
+        return c.copyWith(
+          scheduled: rest,
+          billing: {
+            for (final e in c.billing.entries)
+              if (e.key != existing?.id) e.key: e.value,
+          },
+        );
+      }
+      return c.copyWith(
+        scheduled: [
+          ...rest,
+          existing?.copyWith(
+                start: result.start,
+                end: result.end,
+                notes: result.notes,
+              ) ??
+              ScheduledJob(
+                id: _uuid.v4(),
+                start: result.start!,
+                end: result.end,
+                notes: result.notes,
+              ),
+        ]..sort((a, b) => a.start.compareTo(b.start)),
+      );
+    });
   }
+
+  Future<void> _setBilling(ClientJobEntry e) async {
+    final current = billingFor(widget.client, e);
+    final picked = await showDialog<SessionBilling>(
+      context: context,
+      builder: (_) => _BillingDialog(
+        initial: current,
+        amount: sessionAmount(widget.client, e),
+      ),
+    );
+    if (picked == null || picked == current) return;
+    await widget.onSave((c) => withBilling(c, e, picked));
+  }
+
+  /// "3 h 30 m with the client · $262.50".
+  String _timeAndAmount(ClientJobEntry e, {bool soFar = false}) {
+    final t = e.time;
+    final amount = sessionAmount(widget.client, e);
+    return [
+      if (t != null)
+        '${formatHours(t)} with the client${soFar ? ' so far' : ''}',
+      if (amount != null) formatDollars(amount),
+    ].join(' · ');
+  }
+
+  Widget _tile(
+    ClientJobEntry e, {
+    required Widget leading,
+    required String title,
+    required List<String> lines,
+    VoidCallback? onTap,
+  }) => ListTile(
+    leading: leading,
+    title: Text(title),
+    subtitle: _lines(lines),
+    trailing: _BillingChip(
+      billing: billingFor(widget.client, e),
+      onTap: () => _setBilling(e),
+    ),
+    onTap: onTap ?? () => _setBilling(e),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -1142,27 +1633,34 @@ class _JobsSectionState extends State<_JobsSection> {
     final muted = theme.textTheme.bodyMedium?.copyWith(
       color: theme.colorScheme.onSurfaceVariant,
     );
-    final upcoming = [
+    List<ClientJobEntry> inState(ClientJobState s) => [
       for (final e in widget.entries)
-        if (e.state == ClientJobState.upcoming) e,
+        if (e.state == s) e,
     ];
-    final running = [
-      for (final e in widget.entries)
-        if (e.state == ClientJobState.inProgress) e,
-    ];
-    final completed = [
-      for (final e in widget.entries)
-        if (e.state == ClientJobState.completed) e,
-    ];
+    final upcoming = inState(ClientJobState.upcoming);
+    final running = inState(ClientJobState.inProgress);
+    final completed = inState(ClientJobState.completed);
     final year = widget.now.year;
     final doneThisYear = completed.where(
       (e) => e.start.year == year && !e.noTrips,
     );
     final hours = doneThisYear.fold(
       Duration.zero,
-      (sum, e) => sum + (e.duration ?? Duration.zero),
+      (sum, e) => sum + (e.time ?? Duration.zero),
     );
-    final miles = doneThisYear.fold<double>(0, (sum, e) => sum + e.miles);
+
+    // Money by billing status, across every session.
+    double total(Iterable<ClientJobEntry> es) => es.fold<double>(
+      0,
+      (sum, e) => sum + (sessionAmount(widget.client, e) ?? 0),
+    );
+    Iterable<ClientJobEntry> withStatus(BillingStatus s) =>
+        widget.entries.where((e) => billingFor(widget.client, e).status == s);
+    final paidThisYear = total(
+      withStatus(BillingStatus.paid).where((e) => e.start.year == year),
+    );
+    final toBill = withStatus(BillingStatus.needToBill).toList();
+    final awaiting = withStatus(BillingStatus.billed).toList();
 
     Widget group(String title, List<Widget> rows) => Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1184,13 +1682,13 @@ class _JobsSectionState extends State<_JobsSection> {
       children: [
         Row(
           children: [
-            Expanded(child: _SectionTitle('Jobs')),
+            Expanded(child: _SectionTitle('Sessions')),
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: TextButton.icon(
                 onPressed: _schedule,
                 icon: const Icon(Icons.event_available_outlined),
-                label: const Text('Schedule a job'),
+                label: const Text('Schedule a session'),
               ),
             ),
           ],
@@ -1202,8 +1700,8 @@ class _JobsSectionState extends State<_JobsSection> {
               ? Padding(
                   padding: const EdgeInsets.all(16),
                   child: Text(
-                    'No jobs yet. Schedule one here, or just go: arriving at '
-                    'their address starts a job.',
+                    'No sessions yet. Schedule one here, or just go: arriving '
+                    'at their address starts a session.',
                     style: muted,
                   ),
                 )
@@ -1211,26 +1709,44 @@ class _JobsSectionState extends State<_JobsSection> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                       child: Row(
                         children: [
-                          _Stat('${doneThisYear.length}', 'jobs in $year'),
-                          _Stat(formatHours(hours), 'on the job'),
-                          _Stat(_miles(miles), 'driven'),
+                          _Stat('${doneThisYear.length}', 'sessions in $year'),
+                          _Stat(formatHours(hours), 'with the client'),
+                          _Stat(formatDollars(paidThisYear), 'paid in $year'),
                         ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                      child: Text(
+                        [
+                          toBill.isEmpty
+                              ? 'Nothing to bill'
+                              : '${toBill.length} to bill · '
+                                    '${formatDollars(total(toBill))}',
+                          if (awaiting.isNotEmpty)
+                            '${awaiting.length} billed, not paid · '
+                                '${formatDollars(total(awaiting))}',
+                        ].join('   ·   '),
+                        style: muted,
                       ),
                     ),
                     if (upcoming.isNotEmpty) ...[
                       const Divider(height: 1),
                       group('Upcoming', [
                         for (final e in upcoming)
-                          ListTile(
+                          _tile(
+                            e,
                             leading: const Icon(Icons.event_outlined),
-                            title: Text(_when(e.start)),
-                            subtitle: e.scheduled!.notes.isEmpty
-                                ? null
-                                : Text(e.scheduled!.notes),
-                            trailing: const Icon(Icons.edit_outlined),
+                            title: _booked(e.scheduled!),
+                            lines: [
+                              e.scheduled!.end == null
+                                  ? 'No end time'
+                                  : _timeAndAmount(e),
+                              e.scheduled!.notes,
+                            ],
                             onTap: () => _schedule(e.scheduled),
                           ),
                       ]),
@@ -1239,20 +1755,17 @@ class _JobsSectionState extends State<_JobsSection> {
                       const Divider(height: 1),
                       group('In progress', [
                         for (final e in running)
-                          ListTile(
+                          _tile(
+                            e,
                             leading: Icon(
                               Icons.work,
                               color: theme.colorScheme.primary,
                             ),
-                            title: Text('Since ${formatClock(e.start)}'),
-                            subtitle: Text(
-                              [
-                                '${formatHours(widget.now.difference(e.start))} '
-                                    'so far',
-                                _miles(e.miles),
-                                ..._extras(e),
-                              ].join(' · '),
-                            ),
+                            title: 'Since ${formatClock(e.start)}',
+                            lines: [
+                              _timeAndAmount(e, soFar: true),
+                              _extras(e).join(' · '),
+                            ],
                           ),
                       ]),
                     ],
@@ -1279,7 +1792,13 @@ class _JobsSectionState extends State<_JobsSection> {
     );
   }
 
-  /// Other addresses and other clients visited in the same job.
+  /// Non-empty [lines], one under the other; null if none.
+  static Widget? _lines(List<String> lines) {
+    final shown = lines.where((l) => l.isNotEmpty).toList();
+    return shown.isEmpty ? null : Text(shown.join('\n'));
+  }
+
+  /// Other addresses and other clients visited in the same session.
   List<String> _extras(ClientJobEntry e) => [
     if (e.places.isNotEmpty) 'at ${e.places.join(', ')}',
     if (e.otherClients.isNotEmpty) 'also ${e.otherClients.join(', ')}',
@@ -1287,42 +1806,210 @@ class _JobsSectionState extends State<_JobsSection> {
 
   Widget _completedTile(ClientJobEntry e) {
     final String title;
-    final List<String> details;
+    final List<String> lines;
     if (e.noTrips) {
-      title = _when(e.start);
-      details = ['Scheduled · no trips recorded', e.scheduled!.notes];
+      title = _booked(e.scheduled!);
+      lines = [_timeAndAmount(e), 'Booked · no trips recorded'];
     } else if (!e.timeTracked) {
       title = formatShortDate(e.start);
-      details = ['${_miles(e.miles)} · time not tracked', ..._extras(e)];
+      lines = [
+        e.scheduled?.end != null ? _timeAndAmount(e) : 'Time not tracked',
+        [_miles(e.miles), ..._extras(e)].join(' · '),
+      ];
     } else {
       title =
           '${formatShortDate(e.start)} · ${formatClock(e.start)} – '
           '${formatClock(e.end!)}';
-      details = [_miles(e.miles), ..._extras(e)];
+      lines = [
+        _timeAndAmount(e),
+        [
+          if (e.miles > 0) '${_miles(e.miles)} between clients',
+          ..._extras(e),
+        ].join(' · '),
+        if (e.scheduled?.end != null)
+          'Booked ${formatClock(e.scheduled!.start)} – '
+              '${formatClock(e.scheduled!.end!)}',
+      ];
     }
-    return ListTile(
-      dense: true,
+    return _tile(
+      e,
       leading: Icon(
         e.noTrips ? Icons.event_busy_outlined : Icons.check_circle_outline,
       ),
-      title: Text(title),
-      subtitle: Text(details.where((d) => d.isNotEmpty).join(' · ')),
-      trailing: e.duration == null
-          ? null
-          : Text(
-              formatHours(e.duration!),
-              style: Theme.of(context).textTheme.bodyLarge,
-            ),
+      title: title,
+      lines: [...lines, e.scheduled?.notes ?? ''],
       onTap: e.scheduled != null && e.noTrips
           ? () => _schedule(e.scheduled)
           : null,
     );
   }
 
+  /// "Tue 11/18/26 · 9:30 AM – 12:30 PM".
+  static String _booked(ScheduledJob s) {
+    final end = s.end == null ? '' : ' – ${formatClock(s.end!)}';
+    return '${_when(s.start)}$end';
+  }
+
   /// "Tue 11/18/26 · 9:30 AM".
   static String _when(DateTime d) {
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     return '${days[d.weekday - 1]} ${formatShortDate(d)} · ${formatClock(d)}';
+  }
+}
+
+/// Colors for each billing status.
+({Color bg, Color fg}) billingColors(BillingStatus s, ColorScheme scheme) =>
+    switch (s) {
+      BillingStatus.needToBill => (
+        bg: scheme.errorContainer,
+        fg: scheme.onErrorContainer,
+      ),
+      BillingStatus.billed => (
+        bg: scheme.tertiaryContainer,
+        fg: scheme.onTertiaryContainer,
+      ),
+      BillingStatus.paid => (
+        bg: scheme.primaryContainer,
+        fg: scheme.onPrimaryContainer,
+      ),
+    };
+
+/// "Need to bill", "Billed", or "Paid · Venmo"; tap to change.
+class _BillingChip extends StatelessWidget {
+  const _BillingChip({required this.billing, required this.onTap});
+
+  final SessionBilling billing;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final c = billingColors(billing.status, theme.colorScheme);
+    final method = billing.status == BillingStatus.paid ? billing.method : null;
+    return Tooltip(
+      message: 'Billing',
+      child: Material(
+        color: c.bg,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  billing.status.label,
+                  style: theme.textTheme.labelMedium?.copyWith(color: c.fg),
+                ),
+                if (method != null)
+                  Text(
+                    method.label,
+                    style: theme.textTheme.labelSmall?.copyWith(color: c.fg),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Set a session's billing status, and how it was paid.
+class _BillingDialog extends StatefulWidget {
+  const _BillingDialog({required this.initial, required this.amount});
+
+  final SessionBilling initial;
+  final double? amount;
+
+  @override
+  State<_BillingDialog> createState() => _BillingDialogState();
+}
+
+class _BillingDialogState extends State<_BillingDialog> {
+  late BillingStatus _status = widget.initial.status;
+  late PaymentMethod? _method = widget.initial.method;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    Widget method(PaymentMethod m, String label) => ChoiceChip(
+      label: Text(label),
+      selected: _method == m,
+      onSelected: (_) => setState(() => _method = m),
+    );
+    return AlertDialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      title: Text(
+        widget.amount == null
+            ? 'Billing'
+            : 'Billing · ${formatDollars(widget.amount!)}',
+      ),
+      content: SizedBox(
+        width: 400,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SegmentedButton<BillingStatus>(
+              segments: [
+                for (final s in BillingStatus.values)
+                  ButtonSegment(value: s, label: Text(s.label)),
+              ],
+              selected: {_status},
+              showSelectedIcon: false,
+              onSelectionChanged: (v) => setState(() => _status = v.first),
+            ),
+            if (_status == BillingStatus.paid) ...[
+              const SizedBox(height: 16),
+              Text('Paid with', style: theme.textTheme.titleSmall),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  for (final m in PaymentMethod.values)
+                    if (!m.isStripe) method(m, m.label),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text('Stripe', style: theme.textTheme.titleSmall),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  method(PaymentMethod.stripeCard, 'Card'),
+                  method(PaymentMethod.stripeAffirm, 'Affirm'),
+                  method(PaymentMethod.stripeKlarna, 'Klarna'),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          // Paid needs a payment method.
+          onPressed: _status == BillingStatus.paid && _method == null
+              ? null
+              : () => Navigator.of(context).pop(
+                  SessionBilling(
+                    status: _status,
+                    method: _status == BillingStatus.paid ? _method : null,
+                  ),
+                ),
+          child: const Text('Save'),
+        ),
+      ],
+    );
   }
 }
 
@@ -1336,6 +2023,7 @@ class _Stat extends StatelessWidget {
     final theme = Theme.of(context);
     return Expanded(
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(value, style: theme.textTheme.titleLarge),
           Text(label, style: theme.textTheme.bodySmall),
@@ -1345,29 +2033,49 @@ class _Stat extends StatelessWidget {
   }
 }
 
-typedef _BookingResult = ({DateTime? start, String notes, bool delete});
+typedef _BookingResult = ({
+  DateTime? start,
+  DateTime? end,
+  String notes,
+  bool delete,
+});
 
-/// Book (or move, or cancel) a job: day, start time and notes.
+/// Book (or move, or cancel) a session: day, start and end time, and
+/// notes. Shows what it bills at the client's rate.
 class _BookingDialog extends StatefulWidget {
-  const _BookingDialog({required this.existing, required this.now});
+  const _BookingDialog({
+    required this.existing,
+    required this.now,
+    required this.hourlyRate,
+  });
 
   final ScheduledJob? existing;
   final DateTime now;
+  final double hourlyRate;
 
   @override
   State<_BookingDialog> createState() => _BookingDialogState();
 }
 
 class _BookingDialogState extends State<_BookingDialog> {
+  /// Length of a new booking until an end time is picked.
+  static const _defaultLength = Duration(hours: 3);
+
   late DateTime _day = () {
     final s = widget.existing?.start;
     if (s != null) return DateTime(s.year, s.month, s.day);
     final tomorrow = widget.now.add(const Duration(days: 1));
     return DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
   }();
-  late TimeOfDay _time = widget.existing == null
+  late TimeOfDay _start = widget.existing == null
       ? const TimeOfDay(hour: 9, minute: 0)
       : TimeOfDay.fromDateTime(widget.existing!.start);
+  late TimeOfDay _end = () {
+    final e = widget.existing?.end;
+    if (e != null) return TimeOfDay.fromDateTime(e);
+    final s = DateTime(2000, 1, 1, _start.hour, _start.minute);
+    return TimeOfDay.fromDateTime(s.add(_defaultLength));
+  }();
   late final _notes = TextEditingController(text: widget.existing?.notes ?? '');
 
   @override
@@ -1375,6 +2083,11 @@ class _BookingDialogState extends State<_BookingDialog> {
     _notes.dispose();
     super.dispose();
   }
+
+  DateTime _at(TimeOfDay t) =>
+      DateTime(_day.year, _day.month, _day.day, t.hour, t.minute);
+
+  bool get _valid => _at(_end).isAfter(_at(_start));
 
   Future<void> _pickDay() async {
     final picked = await showDatePicker(
@@ -1386,13 +2099,27 @@ class _BookingDialogState extends State<_BookingDialog> {
     if (picked != null) setState(() => _day = picked);
   }
 
-  Future<void> _pickTime() async {
-    final picked = await showTimePicker(context: context, initialTime: _time);
-    if (picked != null) setState(() => _time = picked);
+  Future<void> _pickStart() async {
+    final picked = await showTimePicker(context: context, initialTime: _start);
+    if (picked == null) return;
+    setState(() {
+      // Moving the start keeps the length.
+      final length = _valid
+          ? _at(_end).difference(_at(_start))
+          : _defaultLength;
+      _start = picked;
+      _end = TimeOfDay.fromDateTime(_at(picked).add(length));
+    });
+  }
+
+  Future<void> _pickEnd() async {
+    final picked = await showTimePicker(context: context, initialTime: _end);
+    if (picked != null) setState(() => _end = picked);
   }
 
   void _save() => Navigator.of(context).pop((
-    start: DateTime(_day.year, _day.month, _day.day, _time.hour, _time.minute),
+    start: _at(_start),
+    end: _at(_end),
     notes: _notes.text.trim(),
     delete: false,
   ));
@@ -1400,9 +2127,14 @@ class _BookingDialogState extends State<_BookingDialog> {
   @override
   Widget build(BuildContext context) {
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    final at = DateTime(2000, 1, 1, _time.hour, _time.minute);
+    final theme = Theme.of(context);
+    final length = _at(_end).difference(_at(_start));
+    final bill =
+        (length.inMinutes / 60 * widget.hourlyRate * 100).round() / 100;
     return AlertDialog(
-      title: Text(widget.existing == null ? 'Schedule a job' : 'Edit job'),
+      title: Text(
+        widget.existing == null ? 'Schedule a session' : 'Edit session',
+      ),
       content: SizedBox(
         width: 400,
         child: Column(
@@ -1416,12 +2148,42 @@ class _BookingDialogState extends State<_BookingDialog> {
               subtitle: const Text('Day'),
               onTap: _pickDay,
             ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.schedule),
-              title: Text(formatClock(at)),
-              subtitle: const Text('Start time'),
-              onTap: _pickTime,
+            Row(
+              children: [
+                Expanded(
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.schedule),
+                    title: Text(formatClock(_at(_start))),
+                    subtitle: const Text('Start time'),
+                    onTap: _pickStart,
+                  ),
+                ),
+                Expanded(
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.schedule_outlined),
+                    title: Text(formatClock(_at(_end))),
+                    subtitle: const Text('End time'),
+                    onTap: _pickEnd,
+                  ),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                _valid
+                    ? '${formatHours(length)} at '
+                          '${formatDollars(widget.hourlyRate)}/hour = '
+                          '${formatDollars(bill)}'
+                    : 'The end time must be after the start time.',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: _valid
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.error,
+                ),
+              ),
             ),
             TextField(
               controller: _notes,
@@ -1440,18 +2202,21 @@ class _BookingDialogState extends State<_BookingDialog> {
         if (widget.existing != null)
           TextButton(
             style: TextButton.styleFrom(
-              foregroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: theme.colorScheme.error,
             ),
             onPressed: () =>
                 Navigator.of(context)
-                    .pop((start: null, notes: '', delete: true)),
-            child: const Text('Cancel job'),
+                    .pop((start: null, end: null, notes: '', delete: true)),
+            child: const Text('Cancel session'),
           ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Close'),
         ),
-        FilledButton(onPressed: _save, child: const Text('Save')),
+        FilledButton(
+          onPressed: _valid ? _save : null,
+          child: const Text('Save'),
+        ),
       ],
     );
   }

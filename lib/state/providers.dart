@@ -249,6 +249,13 @@ class SettingsNotifier extends Notifier<AppSettings> {
         : state.copyWith(ratePerMile: rate),
   );
 
+  Future<void> setBookingUrl(String? url) => _change(
+    SyncedField.bookingUrl,
+    url == null
+        ? state.copyWith(clearBookingUrl: true)
+        : state.copyWith(bookingUrl: url),
+  );
+
   /// Marks [field] as just changed on this device (for settings kept
   /// elsewhere, like the API key) and syncs.
   Future<void> stamp(String field) => _change(field, state);
@@ -261,6 +268,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
       navApp: state.navApp,
       ratePerMile: state.ratePerMile,
       spreadsheetId: id,
+      bookingUrl: state.bookingUrl,
       changedAt: state.changedAt,
     ).stamped(SyncedField.spreadsheetId, ref.read(clockProvider)()),
   );

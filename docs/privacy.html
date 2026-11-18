@@ -33,31 +33,31 @@
   <p>When you sign in with Google, the app asks for two limited permissions:</p>
   <ul>
     <li><strong>Files the app creates</strong> (<code>drive.file</code>): the mileage spreadsheet the app creates in your Google Drive. The app cannot see or change any other file in your Drive.</li>
-    <li><strong>The app's own hidden folder</strong> (<code>drive.appdata</code>): a small file so your phone and computer show the same settings and clients. It holds your Google Maps API key, home address, mileage rate, which spreadsheet to use, your clients (name, addresses, phone number, email, hourly rate, status, policy and consultation dates, and booked jobs), your donation centers, and a record of each job (times, clients visited, stops, and miles). This folder is hidden in Google Drive and only Dunn Record Keeping can read it.</li>
+    <li><strong>The app's own hidden folder</strong> (<code>drive.appdata</code>): a small file so your phone and computer show the same settings and clients. It holds your Google Maps API key, home address, mileage rate, which spreadsheet to use, your clients (name, addresses, phone number, email, hourly rate, status, policy and consultation dates, and booked sessions), your donation centers, and a record of each session (times, clients visited, stops, and miles). This folder is hidden in Google Drive and only Dunn Record Keeping can read it.</li>
   </ul>
   <p>The app also reads your Google account's email address, only to show which account is signed in.</p>
   <p>Dunn Record Keeping's use and transfer of information received from Google APIs follows the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. That information is used only to provide the app's features to you. It is not sold, not used for advertising, and not shared with anyone.</p>
 
   <h2>Information stored on your devices</h2>
   <ul>
-    <li>Your clients, donation centers, logged trips, jobs, settings, and remembered driving distances are stored on each device. Clients, donation centers, and jobs are also copied to the app's hidden Drive folder described above, and nowhere else; the app only opens your phone, messaging, email, or maps app when you tap a client's phone number, email, or Directions.</li>
+    <li>Your clients, donation centers, logged trips, sessions, settings, and remembered driving distances are stored on each device. Clients, donation centers, and sessions are also copied to the app's hidden Drive folder described above, and nowhere else; the app only opens your phone, messaging, email, or maps app when you tap a client's phone number, email, or Directions.</li>
     <li>Your Google Maps API key and your Google sign-in are kept in the device's secure storage (Android Keystore or the macOS Keychain).</li>
   </ul>
 
   <h2>Location (Android, only if you turn on automatic trips)</h2>
   <ul>
-    <li>The phone watches for arrivals at your saved places (home, client addresses, and donation centers) using Android geofences, even when the app is closed. This is how trips and jobs are logged automatically.</li>
-    <li>While a job is running, the phone also follows your location, with an "On a job" notification showing, so it can tell when you stop somewhere else (for example a gas station or a store). This stops when the job ends.</li>
-    <li>Your location stays on the phone. Only the places you stop at become part of a trip or job, which is kept on your devices, in the hidden Drive folder, and in your spreadsheet.</li>
+    <li>The phone watches for arrivals at your saved places (home, client addresses, and donation centers) using Android geofences, even when the app is closed. This is how trips and sessions are logged automatically.</li>
+    <li>While a session is running, the phone also follows your location, with an "In a session" notification showing, so it can tell when you stop somewhere else (for example a gas station or a store). This stops when the session ends.</li>
+    <li>Your location stays on the phone. Only the places you stop at become part of a trip or session, which is kept on your devices, in the hidden Drive folder, and in your spreadsheet.</li>
     <li>You can turn this off at any time in the app's Settings, or by removing the app's location permission in Android settings.</li>
   </ul>
 
   <h2>Google Maps services</h2>
-  <p>To find addresses and measure driving distances, the app sends the text you type in the address search, and the start and end points of each trip, to Google Maps Platform (Places API and Routes API). During a job, when you stop somewhere that isn't saved, the app sends that spot's position to the Places API to find out what is there (such as a gas station) using your own API key. Google's handling of that information is covered by the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</p>
+  <p>To find addresses and measure driving distances, the app sends the text you type in the address search, and the start and end points of each trip, to Google Maps Platform (Places API and Routes API). During a session, when you stop somewhere that isn't saved, the app sends that spot's position to the Places API to find out what is there (such as a gas station) using your own API key. Google's handling of that information is covered by the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</p>
 
   <h2>What the app does not do</h2>
   <ul>
-    <li>No location tracking unless you turn on automatic trips, and none outside a job beyond noticing arrivals at your saved places.</li>
+    <li>No location tracking unless you turn on automatic trips, and none outside a session beyond noticing arrivals at your saved places.</li>
     <li>No analytics, advertising, or third-party tracking.</li>
     <li>No sale or sharing of your information.</li>
   </ul>

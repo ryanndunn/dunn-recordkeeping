@@ -41,6 +41,7 @@ SyncDoc docFromLocal(AppSettings s, String? apiKey) {
     SyncedField.ratePerMile: s.ratePerMile,
     SyncedField.spreadsheetId: s.spreadsheetId,
     SyncedField.apiKey: apiKey,
+    SyncedField.bookingUrl: s.bookingUrl,
   };
   final doc = <String, SyncField>{};
   for (final field in SyncedField.all) {
@@ -90,6 +91,7 @@ bool docsEqual(SyncDoc a, SyncDoc b) =>
           navApp: s.navApp,
           ratePerMile: s.ratePerMile,
           spreadsheetId: s.spreadsheetId,
+          bookingUrl: s.bookingUrl,
         );
       case SyncedField.navApp:
         s = s.copyWith(
@@ -108,7 +110,12 @@ bool docsEqual(SyncDoc a, SyncDoc b) =>
           navApp: s.navApp,
           ratePerMile: s.ratePerMile,
           spreadsheetId: v as String?,
+          bookingUrl: s.bookingUrl,
         );
+      case SyncedField.bookingUrl:
+        s = v == null
+            ? s.copyWith(clearBookingUrl: true)
+            : s.copyWith(bookingUrl: v as String);
       case SyncedField.apiKey:
         if (v != apiKey) {
           apiKey = v as String?;

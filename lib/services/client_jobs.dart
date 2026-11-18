@@ -19,6 +19,7 @@ class ClientJobEntry {
     this.otherClients = const [],
     this.places = const [],
     this.timeTracked = true,
+    this.withClient,
   });
 
   final ClientJobState state;
@@ -46,7 +47,23 @@ class ClientJobEntry {
   /// False for days with trips but no tracked job time.
   final bool timeTracked;
 
+  /// Time at this client's addresses (so far, if running). For sessions
+  /// recorded before visits were kept, the whole session.
+  final Duration? withClient;
+
   Duration? get duration => end?.difference(start);
+
+  /// Keys this session's billing may be saved under, the one to save
+  /// under first: the booking, the recorded session, or the day.
+  List<String> get billingKeys => [
+    if (scheduled != null) scheduled!.id,
+    if (job != null) job!.id,
+    if (scheduled == null && job == null)
+      'day:${start.year}-${start.month}-${start.day}',
+  ];
+
+  /// Time with the client: as recorded, else as booked.
+  Duration? get time => withClient ?? scheduled?.duration;
 
   /// Scheduled, but no trip to the client was recorded that day.
   bool get noTrips => job == null && timeTracked && scheduled != null;
@@ -110,6 +127,9 @@ List<ClientJobEntry> clientJobs({
         start: job.start,
         end: running ? null : end,
         job: job,
+        withClient:
+            job.timeWith(client.name, now) ??
+            (running ? now : end).difference(job.start),
         scheduled: takeBooking(job.start),
         miles: summary.miles,
         otherClients: [
@@ -173,3 +193,35 @@ List<ClientJobEntry> clientJobs({
   });
   return entries;
 }
+
+/// [client]'s billing record for [e] (need to bill, if none yet).
+SessionBilling billingFor(SavedAddress client, ClientJobEntry e) {
+  for (final k in e.billingKeys) {
+    final b = client.billing[k];
+    if (b != null) return b;
+  }
+  return SessionBilling.unbilled;
+}
+
+/// What [e] bills: the booked time at [client]'s rate, or (not booked
+/// with an end time) the time spent with them. Null if neither is known.
+double? sessionAmount(SavedAddress client, ClientJobEntry e) {
+  final booked = e.scheduled?.billFor(client.hourlyRate);
+  if (booked != null) return booked;
+  final t = e.withClient;
+  if (t == null) return null;
+  return (t.inMinutes / 60 * client.hourlyRate * 100).round() / 100;
+}
+
+/// [client] with [e]'s billing set to [billing].
+SavedAddress withBilling(
+  SavedAddress client,
+  ClientJobEntry e,
+  SessionBilling billing,
+) => client.copyWith(
+  billing: {
+    for (final x in client.billing.entries)
+      if (!e.billingKeys.contains(x.key)) x.key: x.value,
+    e.billingKeys.first: billing,
+  },
+);

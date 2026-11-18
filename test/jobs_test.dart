@@ -120,36 +120,47 @@ void main() {
       expect(phone.jobs, isEmpty);
     });
 
-    test(
-      'arriving at a client starts a job, timed from leaving home',
-      () async {
-        final phone = await Phone.create();
-        await phone.store.setLastDeparture(PlaceVisit(home, morning));
-        final out = await phone.client(clinic, morning.add(_m(25)));
+    test('arriving at a client starts a session at the arrival', () async {
+      final phone = await Phone.create();
+      await phone.store.setLastDeparture(PlaceVisit(home, morning));
+      final out = await phone.client(clinic, morning.add(_m(25)));
 
-        expect(route(out.trip!), 'Home → Clinic');
-        final job = phone.jobs.single;
-        expect(job.isActive, isTrue);
-        expect(job.start, morning, reason: 'clock starts when you left');
-        expect(job.startEstimated, isFalse);
-        expect(job.clients, ['Clinic']);
-        expect(out.startedJob?.id, job.id);
-      },
-    );
+      expect(route(out.trip!), 'Home → Clinic');
+      final job = phone.jobs.single;
+      expect(job.isActive, isTrue);
+      expect(
+        job.start,
+        morning.add(_m(25)),
+        reason: 'the drive there is mileage, not session time',
+      );
+      expect(job.atClient, isTrue);
+      expect(job.clients, ['Clinic']);
+      expect(out.startedJob?.id, job.id);
+    });
 
-    test(
-      'without a departure, the start is estimated from the drive',
-      () async {
-        final phone = await Phone.create();
-        await phone.client(clinic, morning);
-        final job = phone.jobs.single;
-        // 15 miles at 30 mph = 30 minutes.
-        expect(job.start, morning.subtract(_m(30)));
-        expect(job.startEstimated, isTrue);
-      },
-    );
+    test('the session ends when you leave the last client; the drive home '
+        'is logged but is not session time', () async {
+      final phone = await Phone.create();
+      await phone.client(clinic, morning);
+      await phone.store.setLastDeparture(
+        PlaceVisit(clinic.toPlace(), morning.add(_m(180))),
+      );
+      final out = await phone.stop(StopKind.home, home, morning.add(_m(200)));
+      expect(route(out.trip!), 'Clinic → Home');
+      final job = phone.jobs.single;
+      expect(job.end, morning.add(_m(180)));
+      expect(jobMiles(job, await phone.trips()), 0);
+    });
 
-    test('clients, donation centers and gas stations keep the job going; '
+    test('without a departure, leaving is estimated from the drive', () async {
+      final phone = await Phone.create();
+      await phone.client(clinic, morning);
+      await phone.stop(StopKind.home, home, morning.add(_m(180)));
+      // 15 miles at 30 mph = 30 minutes.
+      expect(phone.jobs.single.end, morning.add(_m(150)));
+    });
+
+    test('clients, donation centers and gas stations keep the session going; '
         'any other stop ends it, and that drive is logged', () async {
       final phone = await Phone.create();
       await phone.client(clinic, morning);
@@ -162,10 +173,14 @@ void main() {
       await phone.client(dentist, morning.add(_m(150)));
       expect(phone.jobs.single.isActive, isTrue);
 
+      await phone.store.setLastDeparture(
+        PlaceVisit(dentist.toPlace(), morning.add(_m(280))),
+      );
       final out = await phone.stop(StopKind.other, store, morning.add(_m(300)));
       expect(out.endedJob, isNotNull);
       final job = phone.jobs.single;
-      expect(job.end, morning.add(_m(300)));
+      expect(job.start, morning);
+      expect(job.end, morning.add(_m(280)), reason: 'left the dentist');
       expect(job.clients, ['Clinic', 'Dentist']);
       expect(
         [for (final t in await phone.trips()) route(t)],
@@ -177,7 +192,60 @@ void main() {
           'Dentist → Target',
         ],
       );
-      expect(jobMiles(job, await phone.trips()), 75);
+      // Only the drives between clients.
+      expect(jobMiles(job, await phone.trips()), 45);
+    });
+
+    test('each client gets their own time in a shared session', () async {
+      final phone = await Phone.create();
+      await phone.client(clinic, morning);
+      await phone.store.setLastDeparture(
+        PlaceVisit(clinic.toPlace(), morning.add(_m(120))),
+      );
+      await phone.client(dentist, morning.add(_m(150)));
+      await phone.store.setLastDeparture(
+        PlaceVisit(dentist.toPlace(), morning.add(_m(240))),
+      );
+      await phone.stop(StopKind.home, home, morning.add(_m(270)));
+      final job = phone.jobs.single;
+      final later = morning.add(const Duration(hours: 12));
+      expect(job.timeWith('Clinic', later), _m(120));
+      expect(job.timeWith('Dentist', later), _m(90));
+      expect(job.end!.difference(job.start), _m(240));
+    });
+
+    test('a donation stop after the last client is not session time', () async {
+      final phone = await Phone.create();
+      await phone.client(clinic, morning);
+      await phone.store.setLastDeparture(
+        PlaceVisit(clinic.toPlace(), morning.add(_m(120))),
+      );
+      await phone.stop(
+        StopKind.donation,
+        goodwill.toPlace(),
+        morning.add(_m(140)),
+      );
+      await phone.stop(StopKind.home, home, morning.add(_m(170)));
+      expect(phone.jobs.single.end, morning.add(_m(120)));
+    });
+
+    test('leaving a client is remembered for a session left open', () {
+      final open = [
+        Job(id: 'j', start: morning, lastActivity: morning, atClient: true),
+      ];
+      final left = applyDeparture(
+        jobs: open,
+        kind: StopKind.client,
+        at: morning.add(_m(90)),
+      );
+      expect(left.single.leftClientAt, morning.add(_m(90)));
+      final closed = closeStaleJobs(left, morning.add(const Duration(days: 1)));
+      expect(closed.single.end, morning.add(_m(90)));
+      // Leaving home or a donation center changes nothing.
+      expect(
+        applyDeparture(jobs: open, kind: StopKind.donation, at: morning),
+        same(open),
+      );
     });
 
     test('after a job ends, only a client starts the next one', () async {
@@ -199,14 +267,6 @@ void main() {
       expect(route(next.trip!), 'Goodwill → Dentist');
       expect(phone.jobs, hasLength(2));
       expect(phone.jobs.last.isActive, isTrue);
-    });
-
-    test('arriving home ends the job and logs the drive back', () async {
-      final phone = await Phone.create();
-      await phone.client(clinic, morning);
-      final out = await phone.stop(StopKind.home, home, morning.add(_m(180)));
-      expect(route(out.trip!), 'Clinic → Home');
-      expect(phone.jobs.single.end, morning.add(_m(180)));
     });
 
     test('arriving home off the job logs nothing', () async {

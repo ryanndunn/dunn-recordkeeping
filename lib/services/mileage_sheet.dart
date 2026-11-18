@@ -19,14 +19,14 @@ const sheetHeaders = <String>[
 ];
 
 const logTabTitle = 'Mileage Log';
-const jobsTabTitle = 'Jobs';
+const jobsTabTitle = 'Sessions';
 const summaryTabTitle = 'Summary';
 const _logSheetId = 1;
 const _jobsSheetId = 3;
 const _jobIdColumn = 'H';
 
 /// Column layout of the "Jobs" tab: one row per job, from leaving for the
-/// first client until arriving where the job ended.
+/// first client until arriving where the session ended.
 const jobHeaders = <String>[
   'Date',
   'Start',
@@ -35,7 +35,7 @@ const jobHeaders = <String>[
   'Miles',
   'Clients',
   'Notes',
-  'Job ID',
+  'Session ID',
 ];
 
 /// A finished job and the miles driven during it.
@@ -253,11 +253,37 @@ class GoogleMileageSheet implements MileageSheet {
   Future<void> restyle(String spreadsheetId) => _guard(() async {
     final existing = await _api.spreadsheets.get(
       spreadsheetId,
-      $fields: 'sheets.properties.sheetId',
+      $fields: 'sheets.properties(sheetId,title)',
     );
-    final hasJobs = (existing.sheets ?? const []).any(
-      (s) => s.properties?.sheetId == _jobsSheetId,
-    );
+    final jobsTab = (existing.sheets ?? const [])
+        .where((s) => s.properties?.sheetId == _jobsSheetId)
+        .firstOrNull;
+    final hasJobs = jobsTab != null;
+    // Renamed (Jobs → Sessions): rename the tab and its header row.
+    if (hasJobs && jobsTab.properties?.title != jobsTabTitle) {
+      await _api.spreadsheets.batchUpdate(
+        sheets.BatchUpdateSpreadsheetRequest(
+          requests: [
+            sheets.Request(
+              updateSheetProperties: sheets.UpdateSheetPropertiesRequest(
+                properties: sheets.SheetProperties(
+                  sheetId: _jobsSheetId,
+                  title: jobsTabTitle,
+                ),
+                fields: 'title',
+              ),
+            ),
+          ],
+        ),
+        spreadsheetId,
+      );
+      await _api.spreadsheets.values.update(
+        sheets.ValueRange(values: [jobHeaders]),
+        spreadsheetId,
+        "'$jobsTabTitle'!A1",
+        valueInputOption: 'RAW',
+      );
+    }
     if (!hasJobs) {
       await _api.spreadsheets.batchUpdate(
         sheets.BatchUpdateSpreadsheetRequest(

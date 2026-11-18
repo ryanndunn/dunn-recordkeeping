@@ -7,7 +7,7 @@ import 'places_service.dart';
 import 'start_point.dart';
 
 /// What kind of place a stop is. Clients, donation centers and gas
-/// stations keep a job going; anywhere else (home included) ends it.
+/// stations keep a session going; anywhere else (home included) ends it.
 enum StopKind { home, client, donation, gas, other }
 
 bool keepsJobGoing(StopKind kind) =>
@@ -15,11 +15,11 @@ bool keepsJobGoing(StopKind kind) =>
     kind == StopKind.donation ||
     kind == StopKind.gas;
 
-/// Average speed used to estimate when you left, if the phone didn't see
-/// you leave (30 mph).
+/// Average speed used to estimate when you left a client, if the phone
+/// didn't see you leave (30 mph).
 const estimateMilesPerHour = 30.0;
 
-/// What a stop means for the mileage log and the job clock.
+/// What a stop means for the mileage log and the session clock.
 class StopDecision {
   const StopDecision({
     this.trip,
@@ -35,14 +35,13 @@ class StopDecision {
   /// The drive to log, if any.
   final ({Place from, Place to})? trip;
 
-  /// This stop is the first client of a job.
+  /// This stop is the first client of a session.
   final bool startsJob;
 
-  /// This stop ends the running job.
+  /// This stop ends the running session.
   final bool endsJob;
 
-  /// When you left [trip]'s start, if the phone saw it. Used as the job's
-  /// start time.
+  /// When you left [trip]'s start, if the phone saw it.
   final DateTime? departedAt;
 }
 
@@ -71,7 +70,7 @@ Place? currentStart({
   return latestTrip?.to ?? home;
 }
 
-/// The running job, if any. A job left open from an earlier day is not
+/// The running session, if any. One left open from an earlier day is not
 /// running any more (see [closeStaleJobs]).
 Job? activeJob(List<Job> jobs, DateTime now) {
   for (final j in jobs.reversed) {
@@ -80,20 +79,23 @@ Job? activeJob(List<Job> jobs, DateTime now) {
   return null;
 }
 
-/// Ends jobs still open from an earlier day at their last stop.
+/// Ends sessions still open from an earlier day when you left the last
+/// client (or, not seen, at the last stop).
 List<Job> closeStaleJobs(List<Job> jobs, DateTime now) => [
-  for (final j in jobs)
-    j.isActive && !isSameDay(j.start, now)
-        ? j.copyWith(end: j.lastActivity ?? j.start)
-        : j,
+  for (final j in jobs) j.isActive && !isSameDay(j.start, now) ? _closed(j) : j,
 ];
+
+Job _closed(Job j) {
+  final end = j.leftClientAt ?? j.lastActivity ?? j.start;
+  return j.copyWith(end: end, visits: j.visitsLeftAt(end));
+}
 
 /// The rules for a stop of [kind] at [place]:
 ///
-/// * Not on a job: arriving at a client starts one (and logs the drive
-///   there). Anywhere else is not a job, so nothing is logged.
-/// * On a job: the drive is always logged. Clients, donation centers and
-///   gas stations keep the job going; anywhere else ends it.
+/// * Not in a session: arriving at a client starts one (and logs the
+///   drive there). Anywhere else is not a session, so nothing is logged.
+/// * In a session: the drive is always logged. Clients, donation centers
+///   and gas stations keep the session going; anywhere else ends it.
 StopDecision decideStop({
   required StopKind kind,
   required Place place,
@@ -105,12 +107,7 @@ StopDecision decideStop({
   if (start == null) return StopDecision.none;
   // Still at the same place (or the same stop reported twice).
   if (isSamePlace(start, place)) return StopDecision.none;
-
-  final trip = (from: start, to: place);
-  if (onJob) {
-    return StopDecision(trip: trip, endsJob: !keepsJobGoing(kind));
-  }
-  if (kind != StopKind.client) return StopDecision.none;
+  if (!onJob && kind != StopKind.client) return StopDecision.none;
 
   final left = lastDeparture;
   final departedAt =
@@ -120,25 +117,35 @@ StopDecision decideStop({
           left.at.isBefore(arrivedAt)
       ? left.at
       : null;
+  final trip = (from: start, to: place);
+  if (onJob) {
+    return StopDecision(
+      trip: trip,
+      endsJob: !keepsJobGoing(kind),
+      departedAt: departedAt,
+    );
+  }
   return StopDecision(trip: trip, startsJob: true, departedAt: departedAt);
 }
 
-/// When the job started: when you left, or (not seen) the arrival time
-/// less the drive at [estimateMilesPerHour].
-({DateTime start, bool estimated}) jobStartTime({
+/// When you left the place a drive of [miles] started from: as the phone
+/// saw it, or the arrival less the drive at [estimateMilesPerHour] (never
+/// before [notBefore]).
+DateTime departureTime({
   required DateTime? departedAt,
   required DateTime arrivedAt,
   required double miles,
+  DateTime? notBefore,
 }) {
-  if (departedAt != null) return (start: departedAt, estimated: false);
+  if (departedAt != null) return departedAt;
   final minutes = (miles / estimateMilesPerHour * 60).round();
-  return (
-    start: arrivedAt.subtract(Duration(minutes: minutes)),
-    estimated: true,
-  );
+  final t = arrivedAt.subtract(Duration(minutes: minutes));
+  return notBefore != null && t.isBefore(notBefore) ? notBefore : t;
 }
 
-/// Applies [decision] (whose drive measured [miles]) to the job list.
+/// Applies [decision] (whose drive measured [miles]) to the session list.
+/// A session starts on arriving at the first client and ends when you
+/// left the last one.
 List<Job> applyStop({
   required List<Job> jobs,
   required StopDecision decision,
@@ -155,35 +162,65 @@ List<Job> applyStop({
   Job updated;
   if (running != null) {
     updated = running.copyWith(lastActivity: arrivedAt);
+    // This drive left a client: their time ended when you left.
+    if (running.atClient) {
+      final left = departureTime(
+        departedAt: decision.departedAt,
+        arrivedAt: arrivedAt,
+        miles: miles,
+        notBefore: running.lastActivity ?? running.start,
+      );
+      updated = updated.copyWith(
+        leftClientAt: left,
+        visits: running.visitsLeftAt(left),
+      );
+    }
   } else if (decision.startsJob) {
-    final start = jobStartTime(
-      departedAt: decision.departedAt,
-      arrivedAt: arrivedAt,
-      miles: miles,
-    );
-    updated = Job(
-      id: newId(),
-      start: start.start,
-      startEstimated: start.estimated,
-      lastActivity: arrivedAt,
-    );
+    updated = Job(id: newId(), start: arrivedAt, lastActivity: arrivedAt);
     list = [...list, updated];
   } else {
     return list;
   }
-  if (kind == StopKind.client) updated = updated.visiting(place.label);
-  if (decision.endsJob) updated = updated.copyWith(end: arrivedAt);
+  updated = kind == StopKind.client
+      ? updated
+            .visiting(place.label)
+            .copyWith(
+              atClient: true,
+              visits: [...updated.visits, ClientVisit(place.label, arrivedAt)],
+            )
+      : updated.copyWith(atClient: false);
+  if (decision.endsJob) {
+    updated = updated.copyWith(end: updated.endingAt(arrivedAt));
+  }
   return [for (final j in list) j.id == updated.id ? updated : j];
 }
 
-/// Total miles of the trips logged during [job].
+/// The phone left [place] (of [kind]) at [at]: if that was the client
+/// you're with, their time ends there (unless you come back).
+List<Job> applyDeparture({
+  required List<Job> jobs,
+  required StopKind kind,
+  required DateTime at,
+}) {
+  final running = activeJob(jobs, at);
+  if (running == null || !running.atClient || kind != StopKind.client) {
+    return jobs;
+  }
+  final updated = running.copyWith(
+    leftClientAt: at,
+    visits: running.visitsLeftAt(at),
+  );
+  return [for (final j in jobs) j.id == running.id ? updated : j];
+}
+
+/// Miles driven during [job]: the drives between clients (and to any
+/// donation or gas stops between them), not the drive to the first
+/// client or home from the last.
 double jobMiles(Job job, List<Trip> trips) {
   final end = job.end ?? DateTime.now();
   var total = 0.0;
   for (final t in trips) {
-    if (!t.date.isBefore(job.start) && !t.date.isAfter(end)) {
-      total += t.miles;
-    }
+    if (t.date.isAfter(job.start) && !t.date.isAfter(end)) total += t.miles;
   }
   return (total * 10).round() / 10;
 }
@@ -252,7 +289,8 @@ String formatHours(Duration d) {
   return h == 0 ? '$m m' : '$h h ${_two(m)} m';
 }
 
-/// [job] with its stops and miles, from this device's [trips].
+/// [job] with its stops (the first client included) and miles, from this
+/// device's [trips].
 JobSummary summarizeJob(Job job, List<Trip> trips, DateTime now) {
   final end = job.end ?? (job.isActive ? now : job.lastActivity ?? job.start);
   final during = [

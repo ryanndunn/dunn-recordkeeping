@@ -15,10 +15,12 @@ class JobCard extends ConsumerWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('End this job now?'),
+        title: const Text('End this session now?'),
         content: Text(
           'Started ${formatClock(job.start)}. Use this if the phone missed '
-          'where the job ended. Trips already logged are kept.',
+          'where the session ended. It ends now if you\'re still with a '
+          'client, otherwise when you left the last one. Trips already '
+          'logged are kept.',
         ),
         actions: [
           TextButton(
@@ -27,7 +29,7 @@ class JobCard extends ConsumerWidget {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('End job'),
+            child: const Text('End session'),
           ),
         ],
       ),
@@ -53,7 +55,7 @@ class JobCard extends ConsumerWidget {
       final soFar = now.difference(running.start);
       top = ListTile(
         leading: Icon(Icons.work, color: scheme.primary),
-        title: Text('On a job since ${formatClock(running.start)}'),
+        title: Text('In a session since ${formatClock(running.start)}'),
         subtitle: Text(
           [
             '${formatHours(soFar)} so far',
@@ -63,16 +65,17 @@ class JobCard extends ConsumerWidget {
         ),
         trailing: OutlinedButton(
           onPressed: () => _end(context, ref, running),
-          child: const Text('End job'),
+          child: const Text('End session'),
         ),
       );
     } else {
       top = const ListTile(
         leading: Icon(Icons.work_outline),
-        title: Text('Not on a job'),
+        title: Text('Not in a session'),
         subtitle: Text(
-          'A job starts when you arrive at a client, and ends when you stop '
-          'anywhere but a client, donation center or gas station.',
+          'A session is time with clients: from arriving at the first '
+          'client until leaving the last, with the drives between them. '
+          'Mileage is logged as always.',
         ),
         isThreeLine: true,
       );
@@ -94,7 +97,7 @@ class JobCard extends ConsumerWidget {
                 children: [
                   Text(
                     'Today: ${formatHours(total)} on '
-                    '${doneToday.length == 1 ? 'a job' : '${doneToday.length} jobs'}',
+                    '${doneToday.length == 1 ? 'a session' : '${doneToday.length} sessions'}',
                     style: theme.textTheme.titleSmall,
                   ),
                   for (final j in doneToday)

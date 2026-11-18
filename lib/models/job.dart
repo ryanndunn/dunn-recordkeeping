@@ -1,8 +1,45 @@
 import 'place.dart';
 
-/// Time out on a job: from leaving for the first client until arriving
-/// where the job ends (home, or any stop that isn't a client, donation
-/// center or gas station). Becomes one row on the spreadsheet's Jobs tab.
+/// Time at one client during a session: arrived, and left (null while
+/// there).
+class ClientVisit {
+  const ClientVisit(this.client, this.arrived, [this.left]);
+
+  /// The stop's name: the client's, or "Client (Storage unit)".
+  final String client;
+  final DateTime arrived;
+  final DateTime? left;
+
+  ClientVisit leaving(DateTime at) => ClientVisit(client, arrived, at);
+
+  /// How long, counting an open visit until [until].
+  Duration length(DateTime until) {
+    final d = (left ?? until).difference(arrived);
+    return d.isNegative ? Duration.zero : d;
+  }
+
+  /// True if this visit was to [clientName] (any of their addresses).
+  bool isTo(String clientName) =>
+      client == clientName || client.startsWith('$clientName (');
+
+  Map<String, dynamic> toJson() => {
+    'client': client,
+    'arrived': arrived.toIso8601String(),
+    if (left != null) 'left': left!.toIso8601String(),
+  };
+
+  factory ClientVisit.fromJson(Map<String, dynamic> json) => ClientVisit(
+    json['client'] as String,
+    DateTime.parse(json['arrived'] as String),
+    json['left'] == null ? null : DateTime.parse(json['left'] as String),
+  );
+}
+
+/// A session: time with clients, from arriving at the first client until
+/// leaving the last one, including the drives between them (and any
+/// donation or gas stops on the way). The drives to the first client and
+/// home from the last are logged as mileage but aren't session time.
+/// Becomes one row on the spreadsheet's Sessions tab.
 class Job {
   const Job({
     required this.id,
@@ -11,19 +48,22 @@ class Job {
     this.startEstimated = false,
     this.clients = const [],
     this.lastActivity,
+    this.atClient = false,
+    this.leftClientAt,
+    this.visits = const [],
     this.synced = false,
   });
 
   final String id;
 
-  /// When you left for the first client.
+  /// When you arrived at the first client.
   final DateTime start;
 
-  /// When you arrived where the job ended. Null while the job is running.
+  /// When you left the last client. Null while the session is running.
   final DateTime? end;
 
-  /// True when the departure time wasn't seen and [start] is worked out
-  /// from the drive instead.
+  /// Only for sessions recorded before sessions were client time: the
+  /// departure from home wasn't seen and [start] was worked out instead.
   final bool startEstimated;
 
   /// Clients visited, in order, without repeats.
@@ -33,10 +73,41 @@ class Job {
   /// overnight).
   final DateTime? lastActivity;
 
+  /// True while the last stop was a client (you're with them now).
+  final bool atClient;
+
+  /// When you last left a client, as seen by the phone or estimated from
+  /// the drive. The session ends here.
+  final DateTime? leftClientAt;
+
+  /// Each stop at a client, in order. Empty for sessions recorded before
+  /// visits were kept.
+  final List<ClientVisit> visits;
+
+  /// Time spent at [clientName]'s addresses, or null if this session
+  /// didn't record visits.
+  Duration? timeWith(String clientName, DateTime now) {
+    if (visits.isEmpty) return null;
+    final until = end ?? now;
+    return visits
+        .where((v) => v.isTo(clientName))
+        .fold<Duration>(Duration.zero, (sum, v) => sum + v.length(until));
+  }
+
+  /// [visits] with the open one (if any) closed at [at].
+  List<ClientVisit> visitsLeftAt(DateTime at) => [
+    for (final v in visits) v.left == null ? v.leaving(at) : v,
+  ];
+
   /// True once the row is on the spreadsheet.
   final bool synced;
 
   bool get isActive => end == null;
+
+  /// Where the session ends if it ends now: still with a client, [now];
+  /// otherwise when you left the last client.
+  DateTime endingAt(DateTime now) =>
+      atClient ? now : (leftClientAt ?? lastActivity ?? start);
 
   Duration get duration => (end ?? DateTime.now()).difference(start);
 
@@ -45,6 +116,9 @@ class Job {
     DateTime? end,
     List<String>? clients,
     DateTime? lastActivity,
+    bool? atClient,
+    DateTime? leftClientAt,
+    List<ClientVisit>? visits,
     bool? synced,
   }) => Job(
     id: id,
@@ -53,6 +127,9 @@ class Job {
     startEstimated: startEstimated,
     clients: clients ?? this.clients,
     lastActivity: lastActivity ?? this.lastActivity,
+    atClient: atClient ?? this.atClient,
+    leftClientAt: leftClientAt ?? this.leftClientAt,
+    visits: visits ?? this.visits,
     synced: synced ?? this.synced,
   );
 
@@ -67,6 +144,9 @@ class Job {
     if (startEstimated) 'startEstimated': true,
     if (clients.isNotEmpty) 'clients': clients,
     if (lastActivity != null) 'lastActivity': lastActivity!.toIso8601String(),
+    if (atClient) 'atClient': true,
+    if (leftClientAt != null) 'leftClientAt': leftClientAt!.toIso8601String(),
+    if (visits.isNotEmpty) 'visits': [for (final v in visits) v.toJson()],
     'synced': synced,
   };
 
@@ -79,6 +159,14 @@ class Job {
     lastActivity: json['lastActivity'] == null
         ? null
         : DateTime.parse(json['lastActivity'] as String),
+    atClient: json['atClient'] as bool? ?? false,
+    leftClientAt: json['leftClientAt'] == null
+        ? null
+        : DateTime.parse(json['leftClientAt'] as String),
+    visits: [
+      for (final v in (json['visits'] as List?) ?? const [])
+        ClientVisit.fromJson(v as Map<String, dynamic>),
+    ],
     synced: json['synced'] as bool? ?? false,
   );
 }
