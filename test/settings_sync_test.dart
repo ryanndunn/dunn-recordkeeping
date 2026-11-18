@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:material_ui/material_ui.dart';
 import 'package:mileage_log/app.dart';
 import 'package:mileage_log/models/app_settings.dart';
+import 'package:mileage_log/models/job.dart';
 import 'package:mileage_log/models/place.dart';
 import 'package:mileage_log/models/saved_address.dart';
 import 'package:mileage_log/models/trip.dart';
@@ -16,6 +17,8 @@ import 'package:mileage_log/services/mileage_sheet.dart';
 import 'package:mileage_log/services/secret_store.dart';
 import 'package:mileage_log/services/settings_sync.dart';
 import 'package:mileage_log/state/providers.dart';
+
+import 'fakes.dart';
 
 /// Stands in for the hidden Drive file both devices share.
 class FakeRemote implements SettingsRemote {
@@ -63,6 +66,12 @@ class MemoryLocalStore implements LocalStore {
   Set<String> _pendingDeletes = {};
   bool _autoTrips = false;
   String? _email;
+  String? _styledSheet;
+
+  @override
+  String? get styledSheetId => _styledSheet;
+  @override
+  Future<void> setStyledSheetId(String id) async => _styledSheet = id;
 
   @override
   bool get autoTripsEnabled => _autoTrips;
@@ -78,6 +87,42 @@ class MemoryLocalStore implements LocalStore {
   @override
   Future<void> savePendingDeletes(Set<String> ids) async =>
       _pendingDeletes = {...ids};
+
+  List<SavedAddress> _donations = [];
+  Map<String, DateTime> _donationDeletions = {};
+  List<Job> _jobs = [];
+  PlaceVisit? _lastStop;
+  PlaceVisit? _lastDeparture;
+
+  @override
+  List<SavedAddress> loadDonationCenters() => [..._donations];
+  @override
+  Future<void> saveDonationCenters(List<SavedAddress> c) async =>
+      _donations = [...c];
+  @override
+  Map<String, DateTime> loadDonationDeletions() => {..._donationDeletions};
+  @override
+  Future<void> saveDonationDeletions(Map<String, DateTime> d) async =>
+      _donationDeletions = {...d};
+  @override
+  Future<void> reload() async {}
+  String? _otherJobs;
+  @override
+  String? get otherDeviceJobsRaw => _otherJobs;
+  @override
+  Future<void> setOtherDeviceJobsRaw(String raw) async => _otherJobs = raw;
+  @override
+  List<Job> loadJobs() => [..._jobs];
+  @override
+  Future<void> saveJobs(List<Job> jobs) async => _jobs = [...jobs];
+  @override
+  PlaceVisit? get lastStop => _lastStop;
+  @override
+  Future<void> setLastStop(PlaceVisit v) async => _lastStop = v;
+  @override
+  PlaceVisit? get lastDeparture => _lastDeparture;
+  @override
+  Future<void> setLastDeparture(PlaceVisit v) async => _lastDeparture = v;
 
   Map<String, DateTime> _clientDeletions = {};
   @override
@@ -141,6 +186,33 @@ class FakeSheet implements MileageSheet {
     final rows = sheets[id];
     if (rows == null) throw const SheetException('gone', missing: true);
     rows.removeWhere((k, _) => tripIds.contains(k));
+  }
+
+  /// Job rows by spreadsheet, keyed by job ID (with miles).
+  final jobRows = <String, Map<String, JobRecord>>{};
+
+  @override
+  Future<void> addJobs(String id, List<JobRecord> jobs) async {
+    if (offline) throw const SheetException('offline');
+    if (!sheets.containsKey(id)) {
+      throw const SheetException('gone', missing: true);
+    }
+    final rows = jobRows[id] ??= {};
+    for (final j in jobs) {
+      rows[j.job.id] = j;
+    }
+  }
+
+  /// Spreadsheet IDs restyled, in order.
+  final restyled = <String>[];
+
+  @override
+  Future<void> restyle(String id) async {
+    if (offline) throw const SheetException('offline');
+    if (!sheets.containsKey(id)) {
+      throw const SheetException('gone', missing: true);
+    }
+    restyled.add(id);
   }
 }
 
@@ -412,6 +484,30 @@ void main() {
       lng: -89.6,
     );
 
+    test('donation centers sync too, kept apart from clients', () async {
+      final remote = FakeRemote();
+      var now = DateTime.utc(2026, 11, 15, 9);
+      DateTime clock() => now;
+      final mac = await device(remote, clock: clock);
+      final phone = await device(remote, clock: clock);
+      await mac.read(syncProvider.notifier).signIn();
+      await phone.read(syncProvider.notifier).signIn();
+
+      final goodwill = await mac
+          .read(donationCentersProvider.notifier)
+          .add(name: 'Goodwill', place: elm);
+      await mac.read(syncProvider.notifier).syncNow();
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(phone.read(donationCentersProvider).single.name, 'Goodwill');
+      expect(phone.read(addressesProvider), isEmpty);
+
+      now = now.add(const Duration(minutes: 1));
+      await phone.read(donationCentersProvider.notifier).remove(goodwill.id);
+      await phone.read(syncProvider.notifier).syncNow();
+      await mac.read(syncProvider.notifier).syncNow();
+      expect(mac.read(donationCentersProvider), isEmpty);
+    });
+
     test('added, edited and deleted clients reach the other device', () async {
       final remote = FakeRemote();
       var now = DateTime.utc(2026, 11, 15, 9);
@@ -546,6 +642,21 @@ void main() {
       expect(sheet.sheets['sheet-1']!.keys, contains(trip.id));
     });
 
+    test('an older spreadsheet gets its trip rows restyled once', () async {
+      final remote = FakeRemote();
+      final sheet = FakeSheet();
+      final mac = await device(remote, clock: () => now, sheet: sheet);
+      final phone = await device(remote, clock: () => now, sheet: sheet);
+      await mac.read(syncProvider.notifier).signIn();
+      expect(sheet.restyled, isEmpty, reason: 'new sheets start styled');
+
+      // The phone finds the existing spreadsheet: repair it, once.
+      await phone.read(syncProvider.notifier).signIn();
+      await phone.read(syncProvider.notifier).syncNow();
+      await mac.read(syncProvider.notifier).syncNow();
+      expect(sheet.restyled, ['sheet-1']);
+    });
+
     test(
       'deleting an uploaded trip removes its row; Undo brings it back',
       () async {
@@ -566,6 +677,80 @@ void main() {
         expect(mac.read(tripsProvider).single.synced, isFalse);
         await mac.read(syncProvider.notifier).syncNow();
         expect(sheet.sheets['sheet-1']!.keys, [trip.id]);
+      },
+    );
+
+    test('a finished job goes to the Jobs tab with its miles', () async {
+      final sheet = FakeSheet();
+      final mac = await device(
+        FakeRemote(),
+        clock: () => now,
+        sheet: sheet,
+        distance: FakeDistanceService(miles: 8),
+      );
+      await mac.read(settingsProvider.notifier).setHome(home);
+      final c = await mac
+          .read(addressesProvider.notifier)
+          .add(name: 'Clinic', place: clinic);
+      await mac.read(syncProvider.notifier).signIn();
+
+      // A trip to a client starts a job; it uploads once it ends.
+      await mac.read(tripsProvider.notifier).logTripTo(c.toPlace());
+      expect(mac.read(jobsProvider).single.isActive, isTrue);
+      await mac.read(syncProvider.notifier).syncNow();
+      expect(sheet.jobRows['sheet-1'], isNull, reason: 'still running');
+
+      await mac.read(tripsProvider.notifier).logTripTo(home);
+      expect(mac.read(jobsProvider).single.isActive, isFalse);
+      await mac.read(syncProvider.notifier).syncNow();
+      final row = sheet.jobRows['sheet-1']!.values.single;
+      expect(row.miles, 16);
+      expect(row.job.clients, ['Clinic']);
+      expect(mac.read(jobsProvider).single.synced, isTrue);
+    });
+
+    test(
+      'a job recorded on the phone shows on the Mac, uploaded once',
+      () async {
+        final remote = FakeRemote();
+        final sheet = FakeSheet();
+        final phone = await device(
+          remote,
+          clock: () => now,
+          sheet: sheet,
+          distance: FakeDistanceService(miles: 8),
+        );
+        final mac = await device(remote, clock: () => now, sheet: sheet);
+        await phone.read(syncProvider.notifier).signIn();
+        await mac.read(syncProvider.notifier).signIn();
+
+        await phone.read(settingsProvider.notifier).setHome(home);
+        final c = await phone
+            .read(addressesProvider.notifier)
+            .add(name: 'Clinic', place: clinic);
+        await phone.read(tripsProvider.notifier).logTripTo(c.toPlace());
+        await phone.read(syncProvider.notifier).syncNow();
+        await mac.read(syncProvider.notifier).syncNow();
+
+        // Running on the phone: the Mac sees it, but has no trips of its own.
+        final onMac = mac.read(allJobSummariesProvider).single;
+        expect(onMac.job.isActive, isTrue);
+        expect(onMac.miles, 8);
+        expect(onMac.stops.single.label, 'Clinic');
+        expect(mac.read(jobsProvider), isEmpty);
+
+        // Ended on the phone: the Mac gets the finished job.
+        await phone.read(tripsProvider.notifier).logTripTo(home);
+        await phone.read(syncProvider.notifier).syncNow();
+        await mac.read(syncProvider.notifier).syncNow();
+        final ended = mac.read(allJobSummariesProvider).single;
+        expect(ended.job.isActive, isFalse);
+        expect(ended.miles, 16);
+
+        // Only the phone uploads it.
+        await mac.read(syncProvider.notifier).syncNow();
+        expect(sheet.jobRows['sheet-1'], hasLength(1));
+        expect(mac.read(jobsProvider), isEmpty);
       },
     );
 

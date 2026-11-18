@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mileage_log/models/place.dart';
+import 'package:mileage_log/models/saved_address.dart';
 import 'package:mileage_log/models/trip.dart';
 import 'package:mileage_log/services/auto_trip.dart';
 import 'package:mileage_log/services/local_store.dart';
@@ -113,6 +114,28 @@ void main() {
           .add(name: 'Clinic', place: clinic);
       await Future<void>.delayed(Duration.zero);
       expect(geofences.fences, hasLength(2));
+
+      // A client's other address is watched too.
+      final client = app.read(addressesProvider).single;
+      await app
+          .read(addressesProvider.notifier)
+          .replace(
+            client.copyWith(
+              locations: const [
+                ClientLocation(
+                  id: 's',
+                  label: 'Storage unit',
+                  address: '8 Depot Rd',
+                  placeId: 'ps',
+                  lat: 40.1,
+                  lng: -89.1,
+                ),
+              ],
+            ),
+          );
+      await Future<void>.delayed(Duration.zero);
+      expect(geofences.fences, hasLength(3));
+      expect(geofences.fences.keys, contains(addressFenceId('${client.id}/s')));
     });
 
     test(

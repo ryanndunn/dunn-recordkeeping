@@ -2,7 +2,9 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../services/jobs.dart';
 import '../../state/providers.dart';
+import '../log_trip/log_trip_screen.dart';
 import '../../widgets/place_dialog.dart';
 
 class SettingsScreen extends ConsumerWidget {
@@ -70,6 +72,7 @@ class SettingsScreen extends ConsumerWidget {
           constraints: const BoxConstraints(maxWidth: 640),
           child: ListView(
             children: [
+              const _MileageLogTile(),
               if (ref.watch(autoTripProvider).supported) ...[
                 section('Automatic trips'),
                 const _AutoTripsSection(),
@@ -132,6 +135,39 @@ class SettingsScreen extends ConsumerWidget {
   }
 }
 
+/// Opens the Mileage Log (trips, jobs, donation centers), with the job
+/// status at a glance.
+class _MileageLogTile extends ConsumerWidget {
+  const _MileageLogTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final running = activeJob(
+      ref.watch(jobsProvider),
+      ref.read(clockProvider)(),
+    );
+    return Card(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: ListTile(
+        leading: Icon(
+          running == null ? Icons.add_road : Icons.work,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+        title: const Text('Mileage Log'),
+        subtitle: Text(
+          running == null
+              ? 'Log trips, see time on jobs, and manage donation centers'
+              : 'On a job since ${formatClock(running.start)}',
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.of(
+          context,
+        ).push(MaterialPageRoute<void>(builder: (_) => const LogTripScreen())),
+      ),
+    );
+  }
+}
+
 /// Turns arrival detection on/off and explains what it needs.
 class _AutoTripsSection extends ConsumerWidget {
   const _AutoTripsSection();
@@ -145,18 +181,19 @@ class _AutoTripsSection extends ConsumerWidget {
     final String status;
     if (!auto.enabled) {
       status =
-          'Off. When on, arriving at a client\'s address (or home after '
-          'appointments) and staying 5 minutes logs the trip, even with the '
-          'app closed. Works with Google Maps, Waze, or no navigation app.';
+          'Off. When on, the phone logs your jobs, even with the app closed: '
+          'arriving at a client starts one, and every drive is logged until '
+          'you stop anywhere but a client, donation center or gas station. '
+          'Works with Google Maps, Waze, or no navigation app.';
     } else if (!auto.permissionOk) {
       status =
           'Paused: location is not set to "Allow all the time". Tap to fix.';
     } else {
       status =
           'Watching ${auto.watching} '
-          '${auto.watching == 1 ? 'place' : 'places'}. Trips are logged when '
-          'you arrive and stay 5 minutes, whether you drove with Google '
-          'Maps, Waze, or neither.';
+          '${auto.watching == 1 ? 'place' : 'places'}. A stop counts after '
+          '5 minutes. During a job the phone also watches for other stops '
+          '(an "On a job" notification shows) to know when the job ends.';
     }
 
     return Column(

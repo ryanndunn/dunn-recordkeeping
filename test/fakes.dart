@@ -62,4 +62,14 @@ class FakePlacesService implements PlacesService {
     sessionTokensUsed.add(sessionToken);
     return places.firstWhere((p) => p.placeId == placeId);
   }
+
+  /// What [nearby] returns.
+  List<NearbyPlace> nearbyResult = const [];
+
+  @override
+  Future<List<NearbyPlace>> nearby(
+    double lat,
+    double lng, {
+    double radiusMeters = 75,
+  }) async => nearbyResult;
 }

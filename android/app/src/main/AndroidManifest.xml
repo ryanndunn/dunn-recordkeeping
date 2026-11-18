@@ -57,6 +57,14 @@
                  android:foregroundServiceType="location"
                  android:permission="android.permission.BIND_JOB_SERVICE"
                  android:exported="true"/>
+        <!-- Used by plugin: flutter_background_service. Watches location
+             only while a job is running (with an "On a job" notification),
+             to notice stops at places that aren't saved. -->
+        <service android:name="id.flutter.flutter_background_service.BackgroundService"
+                 android:foregroundServiceType="location"
+                 android:enabled="true"
+                 android:exported="true"
+                 android:stopWithTask="false"/>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

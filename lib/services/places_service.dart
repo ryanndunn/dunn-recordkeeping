@@ -24,6 +24,17 @@ class PlaceSuggestion {
   final String fullText;
 }
 
+/// A business or address Google knows at a spot, and what kind it is
+/// (Google place types such as "gas_station").
+class NearbyPlace {
+  const NearbyPlace(this.place, this.types);
+
+  final Place place;
+  final List<String> types;
+
+  bool get isGasStation => types.contains('gas_station');
+}
+
 class PlacesException implements Exception {
   const PlacesException(this.message);
   final String message;
@@ -44,6 +55,15 @@ abstract class PlacesService {
   /// Full address, place ID and coordinates for a picked suggestion. Ends
   /// the autocomplete billing session.
   Future<Place> details(String placeId, {required String sessionToken});
+
+  /// Places within [radiusMeters] of a spot, nearest first. Used to name a
+  /// stop the phone made somewhere that isn't saved (and tell whether it's
+  /// a gas station).
+  Future<List<NearbyPlace>> nearby(
+    double lat,
+    double lng, {
+    double radiusMeters = 75,
+  });
 }
 
 /// Google Places API (New), called over REST.
@@ -125,6 +145,52 @@ class GooglePlacesService implements PlacesService {
       lat: (location?['latitude'] as num?)?.toDouble(),
       lng: (location?['longitude'] as num?)?.toDouble(),
     );
+  }
+
+  @override
+  Future<List<NearbyPlace>> nearby(
+    double lat,
+    double lng, {
+    double radiusMeters = 75,
+  }) async {
+    final json = await _send(
+      () => client.post(
+        Uri.parse('$_base/places:searchNearby'),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask':
+              'places.id,places.displayName,places.formattedAddress,'
+              'places.location,places.types',
+        },
+        body: jsonEncode({
+          'maxResultCount': 5,
+          'rankPreference': 'DISTANCE',
+          'locationRestriction': {
+            'circle': {
+              'center': {'latitude': lat, 'longitude': lng},
+              'radius': radiusMeters,
+            },
+          },
+        }),
+      ),
+    );
+    return [
+      for (final p
+          in ((json['places'] as List?) ?? const [])
+              .cast<Map<String, dynamic>>())
+        if (p['formattedAddress'] case final String address)
+          NearbyPlace(
+            Place(
+              label: _text(p['displayName']) ?? address.split(',').first,
+              address: address,
+              placeId: p['id'] as String?,
+              lat: (p['location']?['latitude'] as num?)?.toDouble(),
+              lng: (p['location']?['longitude'] as num?)?.toDouble(),
+            ),
+            [for (final t in (p['types'] as List?) ?? const []) '$t'],
+          ),
+    ];
   }
 
   static String? _text(Object? node) =>

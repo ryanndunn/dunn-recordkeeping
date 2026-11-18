@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'background/job_watcher.dart';
 import 'features/clients/clients_screen.dart';
-import 'features/log_trip/log_trip_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'state/providers.dart';
 
@@ -43,22 +43,27 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     // device, add trips detected while the app was closed, and re-check
     // automatic trips. Repeat whenever the app comes back to the front.
     Future.microtask(() async {
-      await ref.read(tripsProvider.notifier).mergeInbox();
+      await _catchUp();
       await ref.read(autoTripProvider.notifier).refresh();
+      await syncJobWatcher(ref.read(localStoreProvider));
       await ref.read(syncProvider.notifier).restore();
     });
     _lifecycle = AppLifecycleListener(
       onResume: () async {
-        await ref.read(tripsProvider.notifier).mergeInbox();
+        await _catchUp();
         await ref.read(autoTripProvider.notifier).refresh();
+        await syncJobWatcher(ref.read(localStoreProvider));
         await ref.read(syncProvider.notifier).syncNow();
       },
     );
     // Arrivals detected while the app is open show up within a minute.
-    _inboxTimer = Timer.periodic(
-      const Duration(minutes: 1),
-      (_) => ref.read(tripsProvider.notifier).mergeInbox(),
-    );
+    _inboxTimer = Timer.periodic(const Duration(minutes: 1), (_) => _catchUp());
+  }
+
+  /// Adds trips and job changes made in the background.
+  Future<void> _catchUp() async {
+    await ref.read(jobsProvider.notifier).refresh();
+    await ref.read(tripsProvider.notifier).mergeInbox();
   }
 
   @override
@@ -68,7 +73,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     super.dispose();
   }
 
-  static const _pages = [LogTripScreen(), ClientsScreen(), SettingsScreen()];
+  static const _pages = [ClientsScreen(), SettingsScreen()];
 
   @override
   Widget build(BuildContext context) {
@@ -78,11 +83,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         selectedIndex: _index,
         onDestinationSelected: (i) => setState(() => _index = i),
         destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.add_road_outlined),
-            selectedIcon: Icon(Icons.add_road),
-            label: 'Log Trip',
-          ),
           NavigationDestination(
             icon: Icon(Icons.people_outline),
             selectedIcon: Icon(Icons.people),

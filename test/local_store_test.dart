@@ -11,14 +11,26 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final store = LocalStore(await SharedPreferences.getInstance());
 
-    const address = SavedAddress(
+    final address = SavedAddress(
       id: 'a1',
+      hourlyRate: 82.5,
+      policiesSignedOn: DateTime(2026, 11, 3),
       name: 'Clinic',
       address: '1 Main St',
       email: 'front@clinic.test',
       phone: '555-0100',
       lat: 1.5,
       lng: -2.5,
+      locations: const [
+        ClientLocation(
+          id: 'l1',
+          label: 'Storage unit',
+          address: '8 Depot Rd',
+          placeId: 'ps',
+          lat: 3,
+          lng: 4,
+        ),
+      ],
     );
     final trip = Trip(
       id: 't1',
@@ -44,6 +56,14 @@ void main() {
       (a.id, a.name, a.address, a.email, a.phone, a.lat, a.lng),
       ('a1', 'Clinic', '1 Main St', 'front@clinic.test', '555-0100', 1.5, -2.5),
     );
+    expect(a.hourlyRate, 82.5);
+    expect(a.policiesSignedOn, DateTime(2026, 11, 3));
+    expect(a.isActive, isTrue);
+    final l = a.locations.single;
+    expect(
+      (l.id, l.label, l.address, l.placeId, l.lat, l.lng),
+      ('l1', 'Storage unit', '8 Depot Rd', 'ps', 3.0, 4.0),
+    );
 
     final t = reloaded.loadTrips().single;
     expect(
@@ -64,5 +84,49 @@ void main() {
     expect(store.loadAddresses(), isEmpty);
     expect(store.loadTrips(), isEmpty);
     expect(store.loadSettings().navApp, NavApp.googleMaps);
+  });
+
+  test('clients default to \$75/hour and pending; defaults stay out of '
+      'saved data', () {
+    final old = SavedAddress.fromJson({
+      'id': 'x',
+      'name': 'Old',
+      'address': '5 Typed St',
+    });
+    expect(old.hourlyRate, 75);
+    expect(old.isActive, isFalse);
+    expect(old.toJson().containsKey('hourlyRate'), isFalse);
+    expect(old.toJson().containsKey('policiesSignedOn'), isFalse);
+
+    final signed = old.copyWith(policiesSignedOn: DateTime(2026, 1, 9));
+    expect(signed.toJson()['policiesSignedOn'], '2026-01-09');
+    expect(signed.copyWith(clearPoliciesSigned: true).isActive, isFalse);
+  });
+
+  test('client status: older clients derive it; set ones are saved', () {
+    final old = SavedAddress.fromJson({
+      'id': 'x',
+      'name': 'Old',
+      'address': '5 Typed St',
+    });
+    expect(old.status, ClientStatus.policyDoc);
+    expect(
+      old.copyWith(policiesSignedOn: DateTime(2026, 1, 9)).status,
+      ClientStatus.active,
+    );
+    expect(old.toJson().containsKey('status'), isFalse);
+
+    final booked = old.copyWith(
+      status: ClientStatus.consultation,
+      consultationOn: DateTime(2026, 2, 3),
+    );
+    final back = SavedAddress.fromJson(booked.toJson());
+    expect(back.status, ClientStatus.consultation);
+    expect(back.consultationOn, DateTime(2026, 2, 3));
+
+    final archived = old.copyWith(status: ClientStatus.archived);
+    expect(clientStops([archived, old]).map((c) => c.id), [
+      'x',
+    ], reason: 'only the one not archived');
   });
 }

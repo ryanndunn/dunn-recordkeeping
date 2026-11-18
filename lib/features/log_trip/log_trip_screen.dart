@@ -10,6 +10,8 @@ import '../../state/providers.dart';
 import '../../widgets/address_search_field.dart';
 import '../../widgets/client_dialog.dart';
 import '../../widgets/place_dialog.dart';
+import 'donation_centers_section.dart';
+import 'job_card.dart';
 
 class LogTripScreen extends ConsumerStatefulWidget {
   const LogTripScreen({super.key});
@@ -53,17 +55,18 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
     if (saved != null) return _logTo(saved.toPlace());
 
     // A Google result can still be a saved place (same place ID, or close by).
-    final match = ref
-        .read(addressMatcherProvider)
-        .match(
-          AddressQuery(
-            text: place.address,
-            placeId: place.placeId,
-            lat: place.lat,
-            lng: place.lng,
-          ),
-          ref.read(addressesProvider),
-        );
+    final match = ref.read(addressMatcherProvider).match(
+      AddressQuery(
+        text: place.address,
+        placeId: place.placeId,
+        lat: place.lat,
+        lng: place.lng,
+      ),
+      [
+        ...clientStops(ref.read(addressesProvider)),
+        ...ref.read(donationCentersProvider),
+      ],
+    );
     if (match != null) return _logTo(match.toPlace());
 
     final choice = await showDialog<_UnmatchedChoice>(
@@ -120,8 +123,10 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
 
   Future<void> _chooseStart() async {
     final home = ref.read(settingsProvider).home;
-    final saved = [...ref.read(addressesProvider)]
-      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    final saved = [
+      ...clientStops(ref.read(addressesProvider)),
+      ...ref.read(donationCentersProvider),
+    ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
     final picked = await showModalBottomSheet<Object>(
       context: context,
@@ -229,7 +234,7 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
         : 0;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Log Trip')),
+      appBar: AppBar(title: const Text('Mileage Log')),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 640),
@@ -237,6 +242,8 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
             padding: const EdgeInsets.all(16),
             children: [
               if (isDemo) const _DemoBanner(),
+              const JobCard(),
+              const SizedBox(height: 12),
               if (start == null)
                 Card(
                   child: ListTile(
@@ -340,7 +347,8 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
                   child: ListTile(
                     title: Text('${trip.from.label} → ${trip.to.label}'),
                     subtitle: Text(
-                      TimeOfDay.fromDateTime(trip.date).format(context),
+                      TimeOfDay.fromDateTime(trip.date.toLocal())
+                          .format(context),
                     ),
                     trailing: Text(
                       trip.estimated
@@ -350,6 +358,8 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
                     ),
                   ),
                 ),
+              const SizedBox(height: 32),
+              const DonationCentersSection(),
             ],
           ),
         ),

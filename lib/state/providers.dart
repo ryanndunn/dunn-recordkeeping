@@ -13,11 +13,14 @@ import '../services/local_store.dart';
 import '../services/places_service.dart';
 import '../services/routes_distance_service.dart';
 import '../services/secret_store.dart';
+import '../services/jobs.dart';
 import '../services/start_point.dart';
 import '../services/auto_trip.dart';
+import 'jobs_provider.dart';
 import 'sync_provider.dart';
 
 export 'auto_trip_provider.dart';
+export 'jobs_provider.dart';
 export 'sync_provider.dart';
 
 const _uuid = Uuid();
@@ -98,32 +101,18 @@ final addressesProvider =
       AddressesNotifier.new,
     );
 
-class AddressesNotifier extends Notifier<List<SavedAddress>> {
-  @override
-  List<SavedAddress> build() => ref.read(localStoreProvider).loadAddresses();
+/// A list of named, Google-verified places that syncs between devices:
+/// clients, or donation centers.
+abstract class SyncedPlacesNotifier extends Notifier<List<SavedAddress>> {
+  List<SavedAddress> load(LocalStore store);
+  Future<void> save(LocalStore store, List<SavedAddress> list);
+  Map<String, DateTime> loadDeletions(LocalStore store);
+  Future<void> saveDeletions(LocalStore store, Map<String, DateTime> d);
 
-  /// Saves a client at a Google-verified [place].
-  Future<SavedAddress> add({
-    required String name,
-    required Place place,
-    String email = '',
-    String phone = '',
-  }) async {
-    final created = SavedAddress(
-      id: _uuid.v4(),
-      name: name.trim(),
-      address: place.address,
-      email: email.trim(),
-      phone: phone.trim(),
-      placeId: place.placeId,
-      lat: place.lat,
-      lng: place.lng,
-      updatedAt: _now(),
-    );
-    await _set([...state, created]);
-    _changed();
-    return created;
-  }
+  LocalStore get _store => ref.read(localStoreProvider);
+
+  @override
+  List<SavedAddress> build() => load(_store);
 
   Future<void> replace(SavedAddress updated) async {
     final stamped = updated.copyWith(updatedAt: _now());
@@ -131,13 +120,9 @@ class AddressesNotifier extends Notifier<List<SavedAddress>> {
     _changed();
   }
 
-  /// Deletes a client here and, through sync, on the other device.
+  /// Deletes an entry here and, through sync, on the other device.
   Future<void> remove(String id) async {
-    final store = ref.read(localStoreProvider);
-    await store.saveClientDeletions({
-      ...store.loadClientDeletions(),
-      id: _now(),
-    });
+    await saveDeletions(_store, {...loadDeletions(_store), id: _now()});
     await _set([
       for (final a in state)
         if (a.id != id) a,
@@ -147,11 +132,17 @@ class AddressesNotifier extends Notifier<List<SavedAddress>> {
 
   /// Replaces the list with one merged from the other device (no re-sync).
   Future<void> replaceFromSync(
-    List<SavedAddress> clients,
+    List<SavedAddress> list,
     Map<String, DateTime> deletions,
   ) async {
-    await ref.read(localStoreProvider).saveClientDeletions(deletions);
-    await _set(clients);
+    await saveDeletions(_store, deletions);
+    await _set(list);
+  }
+
+  Future<SavedAddress> _insert(SavedAddress created) async {
+    await _set([...state, created]);
+    _changed();
+    return created;
   }
 
   DateTime _now() => ref.read(clockProvider)().toUtc();
@@ -160,8 +151,79 @@ class AddressesNotifier extends Notifier<List<SavedAddress>> {
 
   Future<void> _set(List<SavedAddress> next) async {
     state = next;
-    await ref.read(localStoreProvider).saveAddresses(next);
+    await save(_store, next);
   }
+}
+
+class AddressesNotifier extends SyncedPlacesNotifier {
+  @override
+  List<SavedAddress> load(LocalStore store) => store.loadAddresses();
+  @override
+  Future<void> save(LocalStore store, List<SavedAddress> list) =>
+      store.saveAddresses(list);
+  @override
+  Map<String, DateTime> loadDeletions(LocalStore store) =>
+      store.loadClientDeletions();
+  @override
+  Future<void> saveDeletions(LocalStore store, Map<String, DateTime> d) =>
+      store.saveClientDeletions(d);
+
+  /// Saves a client at a Google-verified [place].
+  Future<SavedAddress> add({
+    required String name,
+    required Place place,
+    String email = '',
+    String phone = '',
+  }) => _insert(
+    SavedAddress(
+      id: _uuid.v4(),
+      name: name.trim(),
+      address: place.address,
+      email: email.trim(),
+      phone: phone.trim(),
+      placeId: place.placeId,
+      lat: place.lat,
+      lng: place.lng,
+      storedStatus: ClientStatus.newClient,
+      updatedAt: _now(),
+    ),
+  );
+}
+
+// --------------------------------------------------------- donation centers
+
+final donationCentersProvider =
+    NotifierProvider<DonationCentersNotifier, List<SavedAddress>>(
+      DonationCentersNotifier.new,
+    );
+
+/// Where donated items are dropped off. Stopping at one during a job keeps
+/// the job going; a trip there on its own isn't a job.
+class DonationCentersNotifier extends SyncedPlacesNotifier {
+  @override
+  List<SavedAddress> load(LocalStore store) => store.loadDonationCenters();
+  @override
+  Future<void> save(LocalStore store, List<SavedAddress> list) =>
+      store.saveDonationCenters(list);
+  @override
+  Map<String, DateTime> loadDeletions(LocalStore store) =>
+      store.loadDonationDeletions();
+  @override
+  Future<void> saveDeletions(LocalStore store, Map<String, DateTime> d) =>
+      store.saveDonationDeletions(d);
+
+  Future<SavedAddress> add({required String name, required Place place}) =>
+      _insert(
+        SavedAddress(
+          id: _uuid.v4(),
+          name: name.trim(),
+          address: place.address,
+          placeId: place.placeId,
+          lat: place.lat,
+          lng: place.lng,
+          updatedAt: _now(),
+        ),
+      );
 }
 
 // ----------------------------------------------------------------- settings
@@ -306,8 +368,9 @@ class TripsNotifier extends Notifier<List<Trip>> {
     final now = ref.read(clockProvider)();
     final from =
         fromOverride ??
-        resolveStartPoint(
+        currentStart(
           trips: state,
+          lastStop: ref.read(localStoreProvider).lastStop,
           home: ref.read(settingsProvider).home,
           now: now,
         );
@@ -326,6 +389,7 @@ class TripsNotifier extends Notifier<List<Trip>> {
     );
     await _set([...state, trip]);
     _changed();
+    await ref.read(jobsProvider.notifier).afterManualTrip(trip);
     return trip;
   }
 
@@ -381,8 +445,10 @@ class TripsNotifier extends Notifier<List<Trip>> {
 
 /// The automatic start point for the next trip.
 final nextStartProvider = Provider<Place?>((ref) {
-  return resolveStartPoint(
+  ref.watch(jobsProvider); // Re-checked when the phone notices a stop.
+  return currentStart(
     trips: ref.watch(tripsProvider),
+    lastStop: ref.read(localStoreProvider).lastStop,
     home: ref.watch(settingsProvider).home,
     now: ref.read(clockProvider)(),
   );

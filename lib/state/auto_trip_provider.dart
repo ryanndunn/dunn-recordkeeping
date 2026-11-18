@@ -6,7 +6,9 @@ import 'package:native_geofence/native_geofence.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../background/arrival_handler.dart';
+import '../background/job_watcher.dart';
 import '../models/place.dart';
+import '../models/saved_address.dart';
 import '../services/auto_trip.dart';
 import 'providers.dart';
 
@@ -57,7 +59,9 @@ class AndroidGeofencePlatform implements GeofencePlatform {
           id: e.key,
           location: Location(latitude: e.value.lat!, longitude: e.value.lng!),
           radiusMeters: arrivalRadiusMeters,
-          triggers: {GeofenceEvent.dwell},
+          // Staying 5 minutes is an arrival; leaving starts the job clock
+          // if the next stop is a client.
+          triggers: {GeofenceEvent.dwell, GeofenceEvent.exit},
           iosSettings: const IosGeofenceSettings(initialTrigger: false),
           androidSettings: const AndroidGeofenceSettings(
             initialTriggers: {},
@@ -138,6 +142,7 @@ class AutoTripNotifier extends Notifier<AutoTripState> {
     if (platform == null) return const AutoTripState(supported: false);
     // Re-register whenever the watched places change.
     ref.listen(addressesProvider, (_, _) => _refreshFences());
+    ref.listen(donationCentersProvider, (_, _) => _refreshFences());
     ref.listen(
       settingsProvider.select((s) => s.home),
       (_, _) => _refreshFences(),
@@ -150,7 +155,8 @@ class AutoTripNotifier extends Notifier<AutoTripState> {
 
   GeofencePlatform? get _platform => ref.read(geofencePlatformProvider);
 
-  /// The places to watch: home and every saved address with a position.
+  /// The places to watch: home, every client address and every donation
+  /// center with a position.
   ({Map<String, Place> fences, int skipped}) _desiredFences() {
     final fences = <String, Place>{};
     var skipped = 0;
@@ -162,10 +168,18 @@ class AutoTripNotifier extends Notifier<AutoTripState> {
         skipped++;
       }
     }
-    for (final a in ref.read(addressesProvider)) {
+    for (final a in clientStops(ref.read(addressesProvider))) {
       final place = a.toPlace();
       if (place.hasCoordinates) {
         fences[addressFenceId(a.id)] = place;
+      } else {
+        skipped++;
+      }
+    }
+    for (final d in ref.read(donationCentersProvider)) {
+      final place = d.toPlace();
+      if (place.hasCoordinates) {
+        fences[donationFenceId(d.id)] = place;
       } else {
         skipped++;
       }
@@ -204,6 +218,7 @@ class AutoTripNotifier extends Notifier<AutoTripState> {
   Future<void> disable() async {
     await ref.read(localStoreProvider).setAutoTripsEnabled(false);
     state = state.copyWith(enabled: false, watching: 0);
+    await stopJobWatcher();
     try {
       await _platform?.clearFences();
     } catch (e) {

@@ -9,6 +9,7 @@ import '../services/google_account.dart';
 import '../services/google_account_android.dart';
 import '../services/google_account_desktop.dart';
 import '../services/mileage_sheet.dart';
+import '../services/jobs.dart' show jobMiles, summarizeJob;
 import '../services/settings_sync.dart';
 import 'providers.dart';
 
@@ -186,14 +187,29 @@ class SyncNotifier extends Notifier<SyncState> {
         if (applied.apiKeyChanged) {
           await ref.read(apiKeyProvider.notifier).setFromSync(applied.apiKey);
         }
-        // Merge again with the current list, in case a client was added
-        // or edited here while the file was downloading.
-        final now = clientsFromDoc(
+        // Merge again with the current lists, in case a client (or
+        // donation center) was added or edited here while the file was
+        // downloading.
+        final clients = clientsFromDoc(
           mergeDocs(_localClientDoc(), clientEntries(merged)),
         );
         await ref
             .read(addressesProvider.notifier)
-            .replaceFromSync(now.clients, now.deletions);
+            .replaceFromSync(clients.clients, clients.deletions);
+        final centers = placesFromDoc(
+          mergeDocs(
+            _localDonationDoc(),
+            entriesWithPrefix(merged, donationPrefix),
+          ),
+          donationPrefix,
+        );
+        await ref
+            .read(donationCentersProvider.notifier)
+            .replaceFromSync(centers.clients, centers.deletions);
+        // Jobs the other device recorded, for client pages.
+        await ref
+            .read(otherDeviceJobsProvider.notifier)
+            .replace(otherDeviceJobs(merged, _localJobIds()));
       }
 
       // Spreadsheet: create it if neither device has, then upload trips.
@@ -207,7 +223,12 @@ class SyncNotifier extends Notifier<SyncState> {
 
       // Push settings (including a just-created spreadsheet's ID) and
       // clients.
-      final toWrite = dedupeClients(mergeDocs(_localDoc(), theirs ?? const {}));
+      // This device's own jobs always go as they are here (only it
+      // changes them, e.g. miles measured once back online).
+      final toWrite = {
+        ...dedupeClients(mergeDocs(_localDoc(), theirs ?? const {})),
+        ..._localJobDoc(),
+      };
       if (theirs == null || !docsEqual(toWrite, theirs)) {
         await remote.write(toWrite);
       }
@@ -231,11 +252,31 @@ class SyncNotifier extends Notifier<SyncState> {
     }
   }
 
-  /// Everything this device syncs: settings, API key and clients.
+  /// Everything this device syncs: settings, API key, clients and
+  /// donation centers.
   SyncDoc _localDoc() => {
     ...docFromLocal(ref.read(settingsProvider), ref.read(apiKeyProvider)),
     ..._localClientDoc(),
+    ..._localDonationDoc(),
+    ...ref.read(otherDeviceJobsProvider),
+    ..._localJobDoc(),
   };
+
+  Set<String> _localJobIds() => {for (final j in ref.read(jobsProvider)) j.id};
+
+  SyncDoc _localJobDoc() {
+    final trips = ref.read(tripsProvider);
+    final now = ref.read(clockProvider)();
+    return jobDocFromLocal([
+      for (final j in ref.read(jobsProvider)) summarizeJob(j, trips, now),
+    ]);
+  }
+
+  SyncDoc _localDonationDoc() => placesDocFromLocal(
+    donationPrefix,
+    ref.read(donationCentersProvider),
+    ref.read(localStoreProvider).loadDonationDeletions(),
+  );
 
   SyncDoc _localClientDoc() => clientDocFromLocal(
     ref.read(addressesProvider),
@@ -259,9 +300,15 @@ class SyncNotifier extends Notifier<SyncState> {
         ratePerMile: ref.read(settingsProvider).ratePerMile,
       );
       await settings.setSpreadsheetId(id);
+      await store.setStyledSheetId(id);
     }
 
     try {
+      // Spreadsheets made by older versions: fix white-on-white trip rows.
+      if (store.styledSheetId != id) {
+        await sheet.restyle(id);
+        await store.setStyledSheetId(id);
+      }
       final deletes = store.loadPendingDeletes();
       if (deletes.isNotEmpty) {
         await sheet.deleteTrips(id, deletes);
@@ -278,6 +325,20 @@ class SyncNotifier extends Notifier<SyncState> {
         await sheet.addTrips(id, waiting);
         await trips.markSynced({for (final t in waiting) t.id});
       }
+      // Finished jobs, with the miles driven during each.
+      final jobs = ref.read(jobsProvider.notifier);
+      await jobs.refresh();
+      final done = [
+        for (final j in ref.read(jobsProvider))
+          if (!j.isActive && !j.synced) j,
+      ];
+      if (done.isNotEmpty) {
+        final all = ref.read(tripsProvider);
+        await sheet.addJobs(id, [
+          for (final j in done) (job: j, miles: jobMiles(j, all)),
+        ]);
+        await jobs.markSynced({for (final j in done) j.id});
+      }
     } on SheetException catch (e) {
       if (!e.missing || retried) rethrow;
       // The spreadsheet was deleted: start a new one with this device's
@@ -286,8 +347,10 @@ class SyncNotifier extends Notifier<SyncState> {
         ratePerMile: ref.read(settingsProvider).ratePerMile,
       );
       await settings.setSpreadsheetId(fresh);
+      await store.setStyledSheetId(fresh);
       await store.savePendingDeletes(const {});
       await trips.markAllUnsynced();
+      await ref.read(jobsProvider.notifier).markAllUnsynced();
       await _syncTrips(retried: true);
     }
   }

@@ -1,8 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:googleapis/sheets/v4.dart' as sheets;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:mileage_log/models/job.dart';
 import 'package:mileage_log/models/place.dart';
 import 'package:mileage_log/models/trip.dart';
 import 'package:mileage_log/services/mileage_sheet.dart';
@@ -64,11 +66,50 @@ void main() {
       expect(rows[18][2], '=SUM(C7:C18)');
     });
 
-    test('the trip ID column is hidden', () {
-      final hide = formatRequests().where(
-        (r) => r.updateDimensionProperties?.properties?.hiddenByUser == true,
+    test('the trip ID and job ID columns are hidden', () {
+      final hidden = {
+        for (final r in formatRequests())
+          if (r.updateDimensionProperties?.properties?.hiddenByUser == true)
+            r.updateDimensionProperties!.range!.sheetId:
+                r.updateDimensionProperties!.range!.startIndex,
+      };
+      expect(hidden, {1: 8, 3: 7});
+    });
+
+    test('a job becomes one row: date, times, hours, miles, clients', () {
+      final job = Job(
+        id: 'job-1',
+        start: DateTime(2026, 11, 17, 8, 40),
+        end: DateTime(2026, 11, 17, 12, 25),
+        clients: const ['Jane Smith', 'Main St Clinic'],
       );
-      expect(hide.single.updateDimensionProperties!.range!.startIndex, 8);
+      expect(jobRow((job: job, miles: 42.3)), [
+        '2026-11-17',
+        '08:40',
+        '12:25',
+        3.75,
+        42.3,
+        'Jane Smith, Main St Clinic',
+        '',
+        'job-1',
+      ]);
+      expect(jobRow((job: job, miles: 0)).length, jobHeaders.length);
+    });
+
+    test('trip rows get dark, regular text; the header stays white', () {
+      final rows = formatRequests()
+          .map((r) => r.repeatCell)
+          .where((c) => c != null && c.range!.sheetId == 1)
+          .toList();
+      final header = rows.firstWhere((c) => c!.range!.startRowIndex == 0)!;
+      final data = rows.firstWhere((c) => c!.range!.startRowIndex == 1)!;
+      final headerText = header.cell!.userEnteredFormat!.textFormat!;
+      final dataText = data.cell!.userEnteredFormat!.textFormat!;
+      expect(headerText.foregroundColorStyle!.rgbColor!.red, 1.0);
+      expect(dataText.bold, isFalse);
+      expect(data.range!.endRowIndex, isNull, reason: 'covers future rows');
+      final ink = dataText.foregroundColorStyle!.rgbColor!;
+      expect([ink.red, ink.green, ink.blue].every((c) => c! < 0.2), isTrue);
     });
   });
 
@@ -88,10 +129,82 @@ void main() {
         requests[0].url.queryParameters['valueInputOption'],
         'USER_ENTERED',
       );
+      // Inserting rows would copy the header's white text onto them.
+      expect(requests[0].url.queryParameters['insertDataOption'], 'OVERWRITE');
       final body = jsonDecode(requests[0].body) as Map<String, dynamic>;
       expect((body['values'] as List).single, tripRow(trip));
       expect(requests[1].url.path, endsWith('sheet-1:batchUpdate'));
       expect(requests[1].body, contains('sortRange'));
+    });
+
+    test('dates are mm/dd/yy and times hh:mm AM/PM, on new and updated '
+        'spreadsheets', () {
+      String? pattern(List<sheets.Request> requests, int col) => requests
+          .map((r) => r.repeatCell)
+          .firstWhere(
+            (c) =>
+                c?.range?.sheetId == 1 &&
+                c?.range?.startColumnIndex == col &&
+                c?.cell?.userEnteredFormat?.numberFormat != null,
+          )!
+          .cell!
+          .userEnteredFormat!
+          .numberFormat!
+          .pattern;
+      for (final requests in [formatRequests(), restyleRequests()]) {
+        expect(pattern(requests, 0), 'mm/dd/yy');
+        expect(pattern(requests, 1), 'hh:mm AM/PM');
+      }
+    });
+
+    MockClient spreadsheetWith(List<int> tabIds, List<http.Request> log) =>
+        MockClient((r) async {
+          log.add(r);
+          if (r.method == 'GET') {
+            return http.Response(
+              jsonEncode({
+                'sheets': [
+                  for (final id in tabIds)
+                    {
+                      'properties': {'sheetId': id},
+                    },
+                ],
+              }),
+              200,
+              headers: _json,
+            );
+          }
+          return http.Response('{}', 200, headers: _json);
+        });
+
+    test('updating an older spreadsheet adds the Jobs tab', () async {
+      final requests = <http.Request>[];
+      await GoogleMileageSheet(spreadsheetWith([1, 2], requests))
+          .restyle('sheet-1');
+      final bodies = [
+        for (final r in requests)
+          if (r.method != 'GET') r.body,
+      ];
+      expect(bodies[0], contains('addSheet'));
+      expect(bodies[0], contains('"title":"Jobs"'));
+      expect(bodies[1], contains('Hours'), reason: 'header row');
+      expect(bodies[2], contains('addBanding'), reason: 'Jobs tab look');
+    });
+
+    test('restyling sends the current trip-row look', () async {
+      final requests = <http.Request>[];
+      final client = spreadsheetWith([1, 2, 3], requests);
+      await GoogleMileageSheet(client).restyle('sheet-1');
+      final update = requests.where((r) => r.method != 'GET').single;
+      expect(update.url.path, endsWith('sheet-1:batchUpdate'));
+      expect(
+        jsonDecode(update.body),
+        jsonDecode(
+          jsonEncode(
+            sheets.BatchUpdateSpreadsheetRequest(requests: restyleRequests()),
+          ),
+        ),
+      );
     });
 
     test('deleting finds rows by trip ID and removes them bottom-up', () async {

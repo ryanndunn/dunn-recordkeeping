@@ -16,8 +16,11 @@ sealed class AddressOption {
 }
 
 class SavedOption extends AddressOption {
-  const SavedOption(this.address);
+  const SavedOption(this.address, {this.isDonation = false});
   final SavedAddress address;
+
+  /// A donation center rather than a client.
+  final bool isDonation;
 }
 
 class GoogleOption extends AddressOption {
@@ -112,7 +115,12 @@ class _AddressSearchFieldState extends ConsumerState<AddressSearchField> {
     final text = value.text.trim();
     if (text.isEmpty || value.text == _pickedText) return const [];
 
-    final savedList = ref.read(addressesProvider);
+    final donations = ref.read(donationCentersProvider);
+    final donationIds = {for (final d in donations) d.id};
+    final savedList = [
+      ...clientStops(ref.read(addressesProvider)),
+      ...donations,
+    ];
     final local = widget.includeSaved
         ? ref
               .read(addressMatcherProvider)
@@ -120,7 +128,10 @@ class _AddressSearchFieldState extends ConsumerState<AddressSearchField> {
               .take(4)
               .toList()
         : <SavedAddress>[];
-    final localOptions = [for (final s in local) SavedOption(s)];
+    final localOptions = [
+      for (final s in local)
+        SavedOption(s, isDonation: donationIds.contains(s.id)),
+    ];
 
     final places = ref.read(placesServiceProvider);
     if (places == null || text.length < 3) return localOptions;
@@ -301,8 +312,10 @@ class _OptionsList extends StatelessWidget {
             children: [
               for (final o in options)
                 switch (o) {
-                  SavedOption(:final address) => ListTile(
-                    leading: const Icon(Icons.person),
+                  SavedOption(:final address, :final isDonation) => ListTile(
+                    leading: Icon(
+                      isDonation ? Icons.volunteer_activism : Icons.person,
+                    ),
                     title: Text(address.name),
                     subtitle: Text(address.address),
                     onTap: () => onPick(o),

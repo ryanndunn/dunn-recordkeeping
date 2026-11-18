@@ -4,6 +4,7 @@ import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
 
 import '../models/app_settings.dart';
+import '../models/job.dart';
 import '../models/place.dart';
 import '../models/saved_address.dart';
 
@@ -125,28 +126,34 @@ bool docsEqual(SyncDoc a, SyncDoc b) =>
   );
 }
 
-// ------------------------------------------------------------------ clients
+// ------------------------------------------------- clients, donation centers
 //
-// Each client is its own entry in the same file, keyed "client:<id>", so
-// the newer change wins client by client. A deleted client stays as an
-// entry with a null value, so the deletion reaches the other device.
+// Each client (and donation center) is its own entry in the same file,
+// keyed "client:<id>" (or "donation:<id>"), so the newer change wins entry
+// by entry. A deleted one stays as an entry with a null value, so the
+// deletion reaches the other device.
 
-const _clientPrefix = 'client:';
+const clientPrefix = 'client:';
+const donationPrefix = 'donation:';
+const _placePrefixes = [clientPrefix, donationPrefix];
 
-bool isClientKey(String key) => key.startsWith(_clientPrefix);
+bool isClientKey(String key) => key.startsWith(clientPrefix);
 
-/// This device's clients and deletions as [SyncDoc] entries.
-SyncDoc clientDocFromLocal(
-  List<SavedAddress> clients,
+bool _isPlaceKey(String key) => _placePrefixes.any(key.startsWith);
+
+/// This device's list and deletions as [SyncDoc] entries under [prefix].
+SyncDoc placesDocFromLocal(
+  String prefix,
+  List<SavedAddress> list,
   Map<String, DateTime> deletions,
 ) {
   final doc = <String, SyncField>{
     for (final e in deletions.entries)
-      '$_clientPrefix${e.key}': SyncField(null, e.value.toUtc()),
+      '$prefix${e.key}': SyncField(null, e.value.toUtc()),
   };
-  for (final c in clients) {
+  for (final c in list) {
     final at = (c.updatedAt ?? legacyTime).toUtc();
-    final key = '$_clientPrefix${c.id}';
+    final key = '$prefix${c.id}';
     final deleted = doc[key];
     if (deleted == null || at.isAfter(deleted.at)) {
       doc[key] = SyncField(c.toJson(withTime: false), at);
@@ -155,21 +162,29 @@ SyncDoc clientDocFromLocal(
   return doc;
 }
 
-/// Just the client entries of [doc].
-SyncDoc clientEntries(SyncDoc doc) => {
+SyncDoc clientDocFromLocal(
+  List<SavedAddress> clients,
+  Map<String, DateTime> deletions,
+) => placesDocFromLocal(clientPrefix, clients, deletions);
+
+/// Just the entries of [doc] under [prefix].
+SyncDoc entriesWithPrefix(SyncDoc doc, String prefix) => {
   for (final e in doc.entries)
-    if (isClientKey(e.key)) e.key: e.value,
+    if (e.key.startsWith(prefix)) e.key: e.value,
 };
 
-/// The clients and deletions described by [doc], clients sorted by name.
-({List<SavedAddress> clients, Map<String, DateTime> deletions}) clientsFromDoc(
+SyncDoc clientEntries(SyncDoc doc) => entriesWithPrefix(doc, clientPrefix);
+
+/// The list and deletions under [prefix] in [doc], sorted by name.
+({List<SavedAddress> clients, Map<String, DateTime> deletions}) placesFromDoc(
   SyncDoc doc,
+  String prefix,
 ) {
-  final clients = <SavedAddress>[];
+  final list = <SavedAddress>[];
   final deletions = <String, DateTime>{};
   for (final e in doc.entries) {
-    if (!isClientKey(e.key)) continue;
-    final id = e.key.substring(_clientPrefix.length);
+    if (!e.key.startsWith(prefix)) continue;
+    final id = e.key.substring(prefix.length);
     final v = e.value.value;
     if (v == null) {
       deletions[id] = e.value.at;
@@ -178,7 +193,7 @@ SyncDoc clientEntries(SyncDoc doc) => {
         ...(v as Map<String, dynamic>),
         'id': id,
       });
-      clients.add(
+      list.add(
         c.copyWith(
           updatedAt: e.value.at.isAtSameMomentAs(legacyTime)
               ? null
@@ -187,24 +202,30 @@ SyncDoc clientEntries(SyncDoc doc) => {
       );
     }
   }
-  clients.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-  return (clients: clients, deletions: deletions);
+  list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  return (clients: list, deletions: deletions);
 }
 
-/// When the same client was added on both devices (same name at the same
-/// place), keeps one: the most recently changed, or on a tie the lower ID.
-/// The others are marked deleted just after their own change time, so every
-/// device makes the same choice and the copies don't come back.
+({List<SavedAddress> clients, Map<String, DateTime> deletions}) clientsFromDoc(
+  SyncDoc doc,
+) => placesFromDoc(doc, clientPrefix);
+
+/// When the same client (or donation center) was added on both devices
+/// (same name at the same place), keeps one: the most recently changed, or
+/// on a tie the lower ID. The others are marked deleted just after their
+/// own change time, so every device makes the same choice and the copies
+/// don't come back.
 SyncDoc dedupeClients(SyncDoc doc) {
   final groups = <String, List<MapEntry<String, SyncField>>>{};
   for (final e in doc.entries) {
     final v = e.value.value;
-    if (!isClientKey(e.key) || v is! Map<String, dynamic>) continue;
+    if (!_isPlaceKey(e.key) || v is! Map<String, dynamic>) continue;
+    final prefix = _placePrefixes.firstWhere(e.key.startsWith);
     final name = (v['name'] as String? ?? '').trim().toLowerCase();
     final where =
         (v['placeId'] as String?) ??
         (v['address'] as String? ?? '').trim().toLowerCase();
-    (groups['$name|$where'] ??= []).add(e);
+    (groups['$prefix|$name|$where'] ??= []).add(e);
   }
   final out = {...doc};
   for (final copies in groups.values) {
@@ -222,6 +243,34 @@ SyncDoc dedupeClients(SyncDoc doc) {
   }
   return out;
 }
+
+// ------------------------------------------------------------------- jobs
+//
+// Each device sends the jobs it recorded, keyed "job:<id>", with their
+// stops and miles. Only the device that recorded a job changes it (and
+// uploads it to the spreadsheet); the other just shows it.
+
+const jobPrefix = 'job:';
+
+/// This device's jobs as [SyncDoc] entries.
+SyncDoc jobDocFromLocal(List<JobSummary> jobs) => {
+  for (final j in jobs)
+    '$jobPrefix${j.job.id}': SyncField(j.toJson(), j.changedAt.toUtc()),
+};
+
+/// The jobs in [doc] that this device didn't record.
+SyncDoc otherDeviceJobs(SyncDoc doc, Set<String> localIds) => {
+  for (final e in doc.entries)
+    if (e.key.startsWith(jobPrefix) &&
+        e.value.value is Map<String, dynamic> &&
+        !localIds.contains(e.key.substring(jobPrefix.length)))
+      e.key: e.value,
+};
+
+List<JobSummary> jobsFromDoc(SyncDoc doc) => [
+  for (final e in doc.values)
+    if (e.value case final Map<String, dynamic> json) JobSummary.fromJson(json),
+];
 
 String encodeDoc(SyncDoc doc) => jsonEncode({
   'version': 1,
