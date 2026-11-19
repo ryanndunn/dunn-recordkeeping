@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:async';
 import 'dart:io' show Platform;
 
@@ -5,12 +6,17 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/oauth_config.dart';
+import '../models/lead.dart';
 import '../services/google_account.dart';
 import '../services/google_account_android.dart';
 import '../services/google_account_desktop.dart';
 import '../services/mileage_sheet.dart';
 import '../services/jobs.dart' show jobMiles, summarizeJob;
+import '../services/ledger.dart';
 import '../services/settings_sync.dart';
+import 'leads_provider.dart';
+import 'money_provider.dart';
+import 'policy_docs_provider.dart';
 import 'providers.dart';
 
 /// Google sign-in for this platform, or null when this build has no
@@ -210,6 +216,32 @@ class SyncNotifier extends Notifier<SyncState> {
         await ref
             .read(otherDeviceJobsProvider.notifier)
             .replace(otherDeviceJobs(merged, _localJobIds()));
+        // Signed policy docs matched on the other device.
+        await ref
+            .read(signedDocDecisionsProvider.notifier)
+            .replaceFromSync(
+              signedDocDecisionsFromDoc(
+                mergeDocs(
+                  signedDocDecisionDoc(ref.read(signedDocDecisionsProvider)),
+                  entriesWithPrefix(merged, signedDocPrefix),
+                ),
+              ),
+            );
+        // Payments, expenses and Dunn Club decisions from the other device.
+        for (final p in syncedRecordProviders) {
+          await ref.read(p.notifier).mergeFromSync(merged);
+        }
+        // Leads made clients or dismissed on the other device.
+        await ref
+            .read(leadStatesProvider.notifier)
+            .replaceFromSync(
+              leadStatesFromDoc(
+                mergeDocs(
+                  leadDocFromLocal(ref.read(leadStatesProvider)),
+                  entriesWithPrefix(merged, leadPrefix),
+                ),
+              ),
+            );
       }
 
       // Spreadsheet: create it if neither device has, then upload trips.
@@ -220,6 +252,14 @@ class SyncNotifier extends Notifier<SyncState> {
       } on SheetException catch (e) {
         sheetError = e.message;
       }
+      // New leads from the website's form (if it's linked to the sheet).
+      try {
+        await _syncLeads();
+      } catch (_) {
+        // Shown as before; tried again next sync.
+      }
+      // Newly signed policy docs (if Drive access was given).
+      await ref.read(signedDocsProvider.notifier).check();
 
       // Push settings (including a just-created spreadsheet's ID) and
       // clients.
@@ -258,6 +298,9 @@ class SyncNotifier extends Notifier<SyncState> {
     ...docFromLocal(ref.read(settingsProvider), ref.read(apiKeyProvider)),
     ..._localClientDoc(),
     ..._localDonationDoc(),
+    ...leadDocFromLocal(ref.read(leadStatesProvider)),
+    ...signedDocDecisionDoc(ref.read(signedDocDecisionsProvider)),
+    for (final p in syncedRecordProviders) ...ref.read(p.notifier).toDoc(),
     ...ref.read(otherDeviceJobsProvider),
     ..._localJobDoc(),
   };
@@ -282,6 +325,52 @@ class SyncNotifier extends Notifier<SyncState> {
     ref.read(addressesProvider),
     ref.read(localStoreProvider).loadClientDeletions(),
   );
+
+  Future<void> _syncLeads() async {
+    final session = _session;
+    final id = ref.read(settingsProvider).spreadsheetId;
+    if (session == null || id == null) return;
+    final sheet = ref.read(mileageSheetFactoryProvider)(session);
+    final tabs = await sheet.readFormTabs(id);
+    // The website contact form asks for a phone number; any other linked
+    // form is the Dunn Club sign-up.
+    final contact = tabs.values.where(
+      (rows) => rows.isNotEmpty && isContactFormHeader(rows.first),
+    );
+    final club = tabs.values.where(
+      (rows) => rows.isNotEmpty && !isContactFormHeader(rows.first),
+    );
+    await ref
+        .read(leadsProvider.notifier)
+        .replace(
+          tabs.isEmpty
+              ? null
+              : [for (final rows in contact) ...parseFormResponses(rows)],
+        );
+    await ref.read(clubRegistrationsProvider.notifier).replace([
+      for (final rows in club) ...parseClubResponses(rows),
+    ]);
+  }
+
+  /// Keeps the spreadsheet's Payments and Expenses tabs matching the app
+  /// (rewritten only when something changed).
+  Future<void> _syncLedger(MileageSheet sheet, String id) async {
+    final store = ref.read(localStoreProvider);
+    if (store.recordsRaw(_recordsSheetKey) != id) {
+      await sheet.upgradeToRecords(id);
+      await store.setRecordsRaw(_recordsSheetKey, id);
+      await store.setRecordsRaw(_ledgerWrittenKey, '');
+    }
+    final payments = paymentRows(ref.read(ledgerProvider));
+    final expenses = expenseRows(ref.read(expensesProvider));
+    final written = '$id|${jsonEncode([payments, expenses]).hashCode}';
+    if (store.recordsRaw(_ledgerWrittenKey) == written) return;
+    await sheet.writeLedger(id, payments: payments, expenses: expenses);
+    await store.setRecordsRaw(_ledgerWrittenKey, written);
+  }
+
+  static const _recordsSheetKey = 'records_sheet_v1';
+  static const _ledgerWrittenKey = 'ledger_written_v1';
 
   Future<void> _syncTrips({bool retried = false}) async {
     final session = _session;
@@ -337,6 +426,9 @@ class SyncNotifier extends Notifier<SyncState> {
         ]);
         await jobs.markSynced({for (final j in done) j.id});
       }
+      // Payments and expenses, after mileage so a problem here can't hold
+      // trips back.
+      await _syncLedger(sheet, id);
     } on SheetException catch (e) {
       if (!e.missing || retried) rethrow;
       // The spreadsheet was deleted: start a new one with this device's

@@ -166,6 +166,52 @@ class LocalStore {
   Future<void> setOtherDeviceJobsRaw(String raw) =>
       _prefs.setString(_otherJobsKey, raw);
 
+  static const _leadsKey = 'leads_v1';
+  static const _leadStatesKey = 'lead_states_v1';
+
+  /// Leads as last read from the form's responses tab (JSON), or null if
+  /// never read. "null" (the JSON) means no form is linked.
+  String? get leadsRaw => _prefs.getString(_leadsKey);
+
+  Future<void> setLeadsRaw(String raw) => _prefs.setString(_leadsKey, raw);
+
+  /// What's been done with each lead, as synced (JSON).
+  String? get leadStatesRaw => _prefs.getString(_leadStatesKey);
+
+  Future<void> setLeadStatesRaw(String raw) =>
+      _prefs.setString(_leadStatesKey, raw);
+
+  /// Records kept as JSON under [key] (payments, expenses, Dunn Club
+  /// sign-ups and decisions, and what was last written to the sheet).
+  String? recordsRaw(String key) => _prefs.getString(key);
+
+  Future<void> setRecordsRaw(String key, String raw) =>
+      _prefs.setString(key, raw);
+
+  static const _calendarsShownKey = 'calendars_shown_v1';
+
+  /// The Google calendars shown on the Calendar tab (JSON list of IDs), or
+  /// null for the ones checked in Google Calendar.
+  String? get calendarsShownRaw => _prefs.getString(_calendarsShownKey);
+
+  Future<void> setCalendarsShownRaw(String raw) =>
+      _prefs.setString(_calendarsShownKey, raw);
+
+  static const _signedDocsKey = 'signed_docs_v1';
+  static const _signedDocDecisionsKey = 'signed_doc_decisions_v1';
+
+  /// Signed policy PDFs last found in Drive (JSON).
+  String? get signedDocsRaw => _prefs.getString(_signedDocsKey);
+
+  Future<void> setSignedDocsRaw(String raw) =>
+      _prefs.setString(_signedDocsKey, raw);
+
+  /// Which client each signed doc belongs to, as synced (JSON).
+  String? get signedDocDecisionsRaw => _prefs.getString(_signedDocDecisionsKey);
+
+  Future<void> setSignedDocDecisionsRaw(String raw) =>
+      _prefs.setString(_signedDocDecisionsKey, raw);
+
   Map<String, double>? _distanceCache;
 
   Map<String, double> _distances() => _distanceCache ??= () {

@@ -7,6 +7,12 @@ import 'package:material_ui/material_ui.dart';
 import 'package:mileage_log/app.dart';
 import 'package:mileage_log/models/app_settings.dart';
 import 'package:mileage_log/models/job.dart';
+import 'package:mileage_log/models/lead.dart';
+import 'package:mileage_log/state/leads_provider.dart';
+import 'package:mileage_log/models/money.dart';
+import 'package:mileage_log/state/money_provider.dart';
+import 'package:mileage_log/services/policy_docs.dart';
+import 'package:mileage_log/state/policy_docs_provider.dart';
 import 'package:mileage_log/models/place.dart';
 import 'package:mileage_log/models/saved_address.dart';
 import 'package:mileage_log/models/trip.dart';
@@ -54,6 +60,19 @@ class FakeAccount implements GoogleAccountService {
 
   @override
   Future<void> signOut() async => signedIn = false;
+
+  /// Extra permissions given (signed policy docs, calendar).
+  final granted = <String>{};
+
+  @override
+  Future<http.Client> grantAccess(String scope) async {
+    granted.add(scope);
+    return http.Client();
+  }
+
+  @override
+  Future<http.Client?> access(String scope) async =>
+      granted.contains(scope) ? http.Client() : null;
 }
 
 /// Per-device storage (test SharedPreferences is one shared instance, so
@@ -109,6 +128,42 @@ class MemoryLocalStore implements LocalStore {
   String? _sort;
   @override
   String? get clientSort => _sort;
+
+  final _records = <String, String>{};
+  @override
+  String? recordsRaw(String key) => _records[key];
+  @override
+  Future<void> setRecordsRaw(String key, String raw) async =>
+      _records[key] = raw;
+
+  String? _calendarsShown;
+  @override
+  String? get calendarsShownRaw => _calendarsShown;
+  @override
+  Future<void> setCalendarsShownRaw(String raw) async => _calendarsShown = raw;
+
+  String? _signedDocs;
+  String? _signedDocDecisions;
+  @override
+  String? get signedDocsRaw => _signedDocs;
+  @override
+  Future<void> setSignedDocsRaw(String raw) async => _signedDocs = raw;
+  @override
+  String? get signedDocDecisionsRaw => _signedDocDecisions;
+  @override
+  Future<void> setSignedDocDecisionsRaw(String raw) async =>
+      _signedDocDecisions = raw;
+
+  String? _leads;
+  String? _leadStates;
+  @override
+  String? get leadsRaw => _leads;
+  @override
+  Future<void> setLeadsRaw(String raw) async => _leads = raw;
+  @override
+  String? get leadStatesRaw => _leadStates;
+  @override
+  Future<void> setLeadStatesRaw(String raw) async => _leadStates = raw;
   @override
   Future<void> setClientSort(String sort) async => _sort = sort;
   String? _otherJobs;
@@ -163,6 +218,48 @@ class MemoryLocalStore implements LocalStore {
 /// Stands in for the user's spreadsheet(s): rows keyed by trip ID.
 class FakeSheet implements MileageSheet {
   final sheets = <String, Map<String, Trip>>{};
+
+  /// The linked form's responses tab, per spreadsheet (header first).
+  final formResponses = <String, List<List<String>>>{};
+
+  /// A second linked form (Dunn Club sign-ups), per spreadsheet.
+  final clubResponses = <String, List<List<String>>>{};
+
+  @override
+  Future<Map<String, List<List<String>>>> readFormTabs(String id) async {
+    if (offline) throw const SheetException('offline');
+    return {
+      'Form Responses 1': ?formResponses[id],
+      'Form Responses 2': ?clubResponses[id],
+    };
+  }
+
+  /// Spreadsheets made into business records.
+  final upgraded = <String>{};
+
+  /// The Payments and Expenses tabs' rows, per spreadsheet.
+  final paymentRowsBySheet = <String, List<List<Object>>>{};
+  final expenseRowsBySheet = <String, List<List<Object>>>{};
+  int ledgerWrites = 0;
+
+  @override
+  Future<void> upgradeToRecords(String id) async {
+    if (offline) throw const SheetException('offline');
+    upgraded.add(id);
+  }
+
+  @override
+  Future<void> writeLedger(
+    String id, {
+    required List<List<Object>> payments,
+    required List<List<Object>> expenses,
+  }) async {
+    if (offline) throw const SheetException('offline');
+    ledgerWrites++;
+    paymentRowsBySheet[id] = payments;
+    expenseRowsBySheet[id] = expenses;
+  }
+
   int created = 0;
   bool offline = false;
 
@@ -222,17 +319,34 @@ class FakeSheet implements MileageSheet {
 }
 
 /// One simulated device: its own storage, the shared remote.
+/// Signed PDFs "in Drive".
+class FakeSignedDocs implements SignedDocSource {
+  final docs = <SignedDoc>[];
+  String? lastName;
+
+  @override
+  Future<List<SignedDoc>> find(String nameContains) async {
+    lastName = nameContains;
+    return [...docs];
+  }
+}
+
 Future<ProviderContainer> device(
   FakeRemote remote, {
   required DateTime Function() clock,
   FakeSheet? sheet,
   DistanceService? distance,
+  FakeAccount? account,
+  FakeSignedDocs? signedDocs,
 }) async {
   final container = ProviderContainer(
     overrides: [
       localStoreProvider.overrideWithValue(MemoryLocalStore()),
       secretStoreProvider.overrideWithValue(MemorySecretStore()),
-      googleAccountServiceProvider.overrideWithValue(FakeAccount()),
+      googleAccountServiceProvider.overrideWithValue(account ?? FakeAccount()),
+      signedDocSourceFactoryProvider.overrideWithValue(
+        (_) => signedDocs ?? FakeSignedDocs(),
+      ),
       settingsRemoteFactoryProvider.overrideWithValue((_) => remote),
       mileageSheetFactoryProvider.overrideWithValue(
         (_) => sheet ?? FakeSheet(),
@@ -779,6 +893,185 @@ void main() {
         expect(mac.read(jobsProvider), isEmpty);
       },
     );
+
+    test('leads come from the linked form, and what\'s done with them '
+        'reaches the other device', () async {
+      final remote = FakeRemote();
+      final sheet = FakeSheet();
+      final phone = await device(remote, clock: () => now, sheet: sheet);
+      final mac = await device(remote, clock: () => now, sheet: sheet);
+      await phone.read(syncProvider.notifier).signIn();
+      await mac.read(syncProvider.notifier).signIn();
+      await phone.read(syncProvider.notifier).syncNow();
+      await mac.read(syncProvider.notifier).syncNow();
+
+      // No form linked yet.
+      expect(phone.read(leadsProvider).linked, isFalse);
+
+      sheet.formResponses['sheet-1'] = [
+        ['Timestamp', 'Name', 'Phone number'],
+        ['11/17/2026 14:03:22', 'Sam Sample', '555-0199'],
+      ];
+      await phone.read(syncProvider.notifier).syncNow();
+      final lead = phone.read(leadsProvider).leads.single;
+      expect(lead.name, 'Sam Sample');
+      expect(phone.read(openLeadsProvider), hasLength(1));
+
+      await phone
+          .read(leadStatesProvider.notifier)
+          .set(lead.id, const LeadState(LeadStatus.dismissed));
+      await phone.read(syncProvider.notifier).syncNow();
+      await mac.read(syncProvider.notifier).syncNow();
+      expect(mac.read(leadsProvider).leads.single.id, lead.id);
+      expect(mac.read(openLeadsProvider), isEmpty);
+      expect(
+        mac.read(leadStatesProvider.notifier).of(lead.id).status,
+        LeadStatus.dismissed,
+      );
+    });
+
+    test('a signed policy doc in Drive marks the client signed, on both '
+        'devices', () async {
+      var t = now;
+      final remote = FakeRemote();
+      final drive = FakeSignedDocs();
+      final phoneAccount = FakeAccount();
+      final phone = await device(
+        remote,
+        clock: () => t,
+        account: phoneAccount,
+        signedDocs: drive,
+      );
+      final mac = await device(remote, clock: () => t, signedDocs: drive);
+      await phone.read(syncProvider.notifier).signIn();
+      await mac.read(syncProvider.notifier).signIn();
+      final jane = await phone
+          .read(addressesProvider.notifier)
+          .add(name: 'Jane Smith', place: clinic);
+      await phone
+          .read(addressesProvider.notifier)
+          .add(name: 'Bob Jones', place: home);
+      await phone.read(syncProvider.notifier).syncNow();
+      await mac.read(syncProvider.notifier).syncNow();
+
+      // Not connected yet: nothing is looked up.
+      expect(phone.read(signedDocsProvider).connected, isFalse);
+
+      drive.docs.addAll([
+        SignedDoc(
+          id: 'f1',
+          name: 'Policies - Smith, Jane.pdf',
+          at: DateTime(2026, 11, 14, 16),
+        ),
+        SignedDoc(
+          id: 'f2',
+          name: 'Policies (signed).pdf',
+          at: DateTime(2026, 11, 15, 10),
+        ),
+      ]);
+      t = t.add(const Duration(minutes: 5));
+      await phone.read(signedDocsProvider.notifier).connect();
+      expect(drive.lastName, 'Polic');
+
+      // Jane's name is in the file name: signed, and active.
+      var j = phone.read(addressesProvider).firstWhere((c) => c.id == jane.id);
+      expect(j.policiesSignedOn, DateTime(2026, 11, 14));
+      expect(j.status, ClientStatus.active);
+      // The other doc needs a client picked.
+      expect(phone.read(unmatchedSignedDocsProvider).single.id, 'f2');
+
+      // The Mac (never connected) gets the result through sync.
+      await phone.read(syncProvider.notifier).syncNow();
+      await mac.read(syncProvider.notifier).syncNow();
+      j = mac.read(addressesProvider).firstWhere((c) => c.id == jane.id);
+      expect(j.policiesSignedOn, DateTime(2026, 11, 14));
+      expect(
+        mac.read(signedDocDecisionsProvider.notifier).of('f1')?.clientId,
+        jane.id,
+      );
+
+      // Picking a client by hand, then marking the client not signed:
+      // the doc isn't matched again.
+      final bob = phone
+          .read(addressesProvider)
+          .firstWhere((c) => c.name == 'Bob Jones');
+      await phone
+          .read(signedDocsProvider.notifier)
+          .assign(drive.docs[1], bob.id);
+      expect(phone.read(unmatchedSignedDocsProvider), isEmpty);
+      await phone
+          .read(addressesProvider.notifier)
+          .replace(
+            phone
+                .read(addressesProvider)
+                .firstWhere((c) => c.id == jane.id)
+                .copyWith(clearPoliciesSigned: true),
+          );
+      await phone.read(signedDocsProvider.notifier).check();
+      j = phone.read(addressesProvider).firstWhere((c) => c.id == jane.id);
+      expect(j.policiesSignedOn, isNull);
+    });
+
+    test('Dunn Club sign-ups, payments and expenses reach the other device '
+        'and the business records spreadsheet', () async {
+      var t = now;
+      final remote = FakeRemote();
+      final sheet = FakeSheet();
+      final phone = await device(remote, clock: () => t, sheet: sheet);
+      final mac = await device(remote, clock: () => t, sheet: sheet);
+      await phone.read(syncProvider.notifier).signIn();
+      await mac.read(syncProvider.notifier).signIn();
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(sheet.upgraded, {'sheet-1'}, reason: 'made a business record');
+
+      sheet.clubResponses['sheet-1'] = [
+        ['Timestamp', 'Email Address'],
+        ['10/2/2026 9:00:00', 'sam@example.com'],
+        ['11/3/2026 9:00:00', 'sam@example.com'],
+      ];
+      await phone.read(syncProvider.notifier).syncNow();
+      final regs = phone.read(clubRegistrationsProvider);
+      expect(regs, hasLength(2));
+      expect(phone.read(clubToConfirmProvider).single.id, regs[1].id);
+      // Sam is a lead too.
+      expect(phone.read(openLeadsProvider).single.email, 'sam@example.com');
+
+      t = t.add(const Duration(minutes: 1));
+      await phone
+          .read(clubDecisionRecordsProvider.notifier)
+          .decide(
+            regs[1].id,
+            const ClubDecision(ClubStatus.paid, method: PaymentMethod.venmo),
+          );
+      await mac
+          .read(expenseRecordsProvider.notifier)
+          .save(
+            Expense(
+              id: 'e1',
+              date: DateTime(2026, 11, 5),
+              amount: 12.99,
+              category: ExpenseCategory.software,
+              vendor: 'Canva',
+            ),
+          );
+      await phone.read(syncProvider.notifier).syncNow();
+      await mac.read(syncProvider.notifier).syncNow();
+      await phone.read(syncProvider.notifier).syncNow();
+
+      // Both devices have both.
+      for (final d in [phone, mac]) {
+        expect(d.read(ledgerProvider).single.amount, clubPrice);
+        expect(d.read(expensesProvider).single.vendor, 'Canva');
+      }
+      expect(mac.read(clubToConfirmProvider), isEmpty);
+      // The spreadsheet has them, and isn't rewritten when nothing changed.
+      expect(sheet.paymentRowsBySheet['sheet-1']!.single[5], clubPrice);
+      expect(sheet.expenseRowsBySheet['sheet-1']!.single[1], 'Canva');
+      final writes = sheet.ledgerWrites;
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(sheet.ledgerWrites, writes);
+      expect(sheet.upgraded, {'sheet-1'});
+    });
 
     test('Undo before the next sync just cancels the delete', () async {
       final sheet = FakeSheet();

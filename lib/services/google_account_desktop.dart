@@ -26,6 +26,67 @@ class DesktopGoogleAccountService implements GoogleAccountService {
 
   static const _credentialsName = 'google_oauth_credentials';
 
+  /// Each extra permission is kept apart from the main sign-in (and from
+  /// each other), so those never change.
+  static String _extraName(String scope) => switch (scope) {
+    policyDocsScope => 'google_policy_credentials',
+    calendarScope => 'google_calendar_credentials',
+    _ => 'google_extra_${scope.hashCode}',
+  };
+
+  static const _extraScopes = [policyDocsScope, calendarScope];
+
+  @override
+  Future<http.Client?> access(String scope) async {
+    final raw = await secrets.read(_extraName(scope));
+    if (raw == null) return null;
+    try {
+      final credentials = AccessCredentials.fromJson(
+        jsonDecode(raw) as Map<String, dynamic>,
+      );
+      if (credentials.refreshToken == null) return null;
+      return _keepSaved(
+        scope,
+        autoRefreshingClient(_clientId, credentials, http.Client()),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<http.Client> grantAccess(String scope) async {
+    try {
+      final client = await clientViaUserConsent(
+        _clientId,
+        [scope],
+        (url) => launchUrl(Uri.parse(url)),
+      ).timeout(const Duration(minutes: 5));
+      await secrets.write(
+        _extraName(scope),
+        jsonEncode(client.credentials.toJson()),
+      );
+      return _keepSaved(scope, client);
+    } on TimeoutException {
+      throw const GoogleAccountException(
+        'Timed out. Try again, and finish it in the browser window.',
+        cancelled: true,
+      );
+    } catch (e) {
+      throw GoogleAccountException('Google didn\'t grant access: $e');
+    }
+  }
+
+  AutoRefreshingAuthClient _keepSaved(
+    String scope,
+    AutoRefreshingAuthClient client,
+  ) {
+    client.credentialUpdates.listen(
+      (c) => secrets.write(_extraName(scope), jsonEncode(c.toJson())),
+    );
+    return client;
+  }
+
   AutoRefreshingAuthClient? _client;
   StreamSubscription<AccessCredentials>? _updates;
 
@@ -73,6 +134,9 @@ class DesktopGoogleAccountService implements GoogleAccountService {
     _client?.close();
     _client = null;
     await secrets.write(_credentialsName, null);
+    for (final scope in _extraScopes) {
+      await secrets.write(_extraName(scope), null);
+    }
   }
 
   GoogleSession _start(AutoRefreshingAuthClient client) {

@@ -14,7 +14,10 @@ import '../../state/providers.dart';
 import '../../widgets/address_search_field.dart';
 import '../../widgets/client_dialog.dart' show looksLikeEmail;
 import '../../widgets/page_body.dart';
+import '../../widgets/payment_fields.dart';
 import '../../services/client_jobs.dart';
+import '../../services/policy_docs.dart' show SignedDoc;
+import '../policy_docs/signed_docs_page.dart';
 import '../../services/jobs.dart' show formatClock, formatHours;
 import 'client_status.dart';
 
@@ -272,7 +275,12 @@ class _ClientDetails extends ConsumerWidget {
     final signed = c.policiesSignedOn != null;
     final policyDoc = [
       _SectionTitle('Policy doc'),
-      _PolicyDocCard(client: c, today: now, onSave: (u) => save((_) => u)),
+      _PolicyDocCard(
+        client: c,
+        today: now,
+        signedDoc: signedDocOf(ref, c),
+        onSave: (u) => save((_) => u),
+      ),
     ];
     final addresses = c.allAddresses;
 
@@ -301,26 +309,21 @@ class _ClientDetails extends ConsumerWidget {
           clipBehavior: Clip.antiAlias,
           child: Column(
             children: [
-              _EditableText(
-                key: ValueKey('phone-${c.id}'),
-                label: 'Phone',
-                icon: Icons.phone_outlined,
-                value: c.phone,
-                placeholder: 'Add a phone number',
-                keyboardType: TextInputType.phone,
-                inputFormatters: [_phoneChars],
-                onSave: (v) => save((x) => x.copyWith(phone: v)),
-              ),
-              const Divider(height: 1),
-              _EditableText(
-                key: ValueKey('email-${c.id}'),
-                label: 'Email',
-                icon: Icons.email_outlined,
-                value: c.email,
-                placeholder: 'Add an email address',
-                keyboardType: TextInputType.emailAddress,
-                validate: _checkEmail,
-                onSave: (v) => save((x) => x.copyWith(email: v)),
+              // The client themself, then anyone else.
+              _ContactRow(
+                key: ValueKey('contact-primary-${c.id}'),
+                contact: c.primaryContact,
+                onSave: (updated) => save(
+                  (x) => x.copyWith(
+                    name: updated.name,
+                    phone: updated.phone,
+                    email: updated.email,
+                    // "Primary" is the default, so it isn't stored.
+                    contactLabel: updated.label == 'Primary'
+                        ? ''
+                        : updated.label,
+                  ),
+                ),
               ),
               for (final p in c.contacts) ...[
                 const Divider(height: 1),
@@ -779,9 +782,13 @@ class _PolicyDocCard extends StatelessWidget {
     required this.client,
     required this.today,
     required this.onSave,
+    this.signedDoc,
   });
 
   final SavedAddress client;
+
+  /// The signed PDF found in Drive for this client, if any.
+  final SignedDoc? signedDoc;
   final DateTime today;
   final Future<void> Function(SavedAddress updated) onSave;
 
@@ -847,16 +854,34 @@ class _PolicyDocCard extends StatelessWidget {
         onTap: () => _pickSignedDay(context),
         leading: Icon(Icons.verified_outlined, color: scheme.primary),
         title: Text('Signed ${formatShortDate(signed)}'),
-        subtitle: const Text('Tap to change the date'),
+        subtitle: Text(
+          signedDoc == null
+              ? 'Tap to change the date'
+              : 'Signed copy in Drive: ${signedDoc!.name}',
+        ),
         trailing: PopupMenuButton<String>(
           tooltip: 'Policy doc options',
           onSelected: (choice) {
+            if (choice == 'open') {
+              openClientLink(context, signedDocUri(signedDoc!));
+            }
             if (choice == 'date') _pickSignedDay(context);
             if (choice == 'unsign') _unsign();
           },
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'date', child: Text('Change signed date')),
-            PopupMenuItem(value: 'unsign', child: Text('Mark as not signed')),
+          itemBuilder: (_) => [
+            if (signedDoc != null)
+              const PopupMenuItem(
+                value: 'open',
+                child: Text('Open the signed PDF'),
+              ),
+            const PopupMenuItem(
+              value: 'date',
+              child: Text('Change signed date'),
+            ),
+            const PopupMenuItem(
+              value: 'unsign',
+              child: Text('Mark as not signed'),
+            ),
           ],
         ),
       ),
@@ -887,7 +912,6 @@ class _EditableText extends StatefulWidget {
     required this.icon,
     required this.value,
     required this.onSave,
-    this.placeholder,
     this.validate,
     this.keyboardType,
     this.inputFormatters,
@@ -899,7 +923,6 @@ class _EditableText extends StatefulWidget {
   final String label;
   final IconData icon;
   final String value;
-  final String? placeholder;
   final String? Function(String value)? validate;
   final Future<void> Function(String value) onSave;
   final TextInputType? keyboardType;
@@ -996,9 +1019,7 @@ class _EditableTextState extends State<_EditableText> {
       onTap: _start,
       leading: Icon(widget.icon),
       title: Text(
-        empty
-            ? (widget.placeholder ?? '')
-            : widget.display?.call(widget.value) ?? widget.value,
+        empty ? '' : widget.display?.call(widget.value) ?? widget.value,
         style: empty ? TextStyle(color: scheme.onSurfaceVariant) : null,
       ),
       subtitle: Text(widget.label),
@@ -1011,19 +1032,20 @@ class _EditableTextState extends State<_EditableText> {
   }
 }
 
-/// Someone else to reach about the client, with call and email buttons.
-/// Tap the row to edit or remove them.
+/// Someone to reach about the client (the client themself first), with
+/// their label and call and email buttons. Tap the row to edit them, or
+/// remove them ([onRemove] is null for the client themself).
 class _ContactRow extends StatefulWidget {
   const _ContactRow({
     super.key,
     required this.contact,
     required this.onSave,
-    required this.onRemove,
+    this.onRemove,
   });
 
   final ClientContact contact;
   final Future<void> Function(ClientContact updated) onSave;
-  final Future<void> Function() onRemove;
+  final Future<void> Function()? onRemove;
 
   @override
   State<_ContactRow> createState() => _ContactRowState();
@@ -1043,18 +1065,46 @@ class _ContactRowState extends State<_ContactRow> {
           setState(() => _editing = false);
           await widget.onSave(updated);
         },
-        onRemove: () async {
-          setState(() => _editing = false);
-          await widget.onRemove();
-        },
+        onRemove: widget.onRemove == null
+            ? null
+            : () async {
+                setState(() => _editing = false);
+                await widget.onRemove!();
+              },
       );
     }
+    final theme = Theme.of(context);
     final details = [p.phone, p.email].where((x) => x.isNotEmpty).join('\n');
     return ListTile(
       onTap: () => setState(() => _editing = true),
       leading: const Icon(Icons.person_outline),
-      title: Text(p.name),
-      subtitle: details.isEmpty ? null : Text(details),
+      title: Row(
+        children: [
+          Flexible(child: Text(p.name)),
+          if (p.label.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                p.label,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: theme.colorScheme.onSecondaryContainer,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+      subtitle: Text(
+        details.isEmpty ? 'Tap to add a phone number or email' : details,
+        style: details.isEmpty
+            ? TextStyle(color: theme.colorScheme.onSurfaceVariant)
+            : null,
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1112,7 +1162,17 @@ class _AddContactState extends State<_AddContact> {
   }
 }
 
-/// Name, phone and email for another contact.
+/// Suggested contact labels.
+const contactLabelSuggestions = [
+  'Primary',
+  'Spouse',
+  'Partner',
+  'Family',
+  'Pays',
+  'Property manager',
+];
+
+/// Name, label, phone and email for a contact.
 class _ContactEditor extends StatefulWidget {
   const _ContactEditor({
     required this.onSave,
@@ -1134,10 +1194,12 @@ class _ContactEditorState extends State<_ContactEditor> {
   late final _name = TextEditingController(text: widget.initial?.name ?? '');
   late final _phone = TextEditingController(text: widget.initial?.phone ?? '');
   late final _email = TextEditingController(text: widget.initial?.email ?? '');
+  late final _label = TextEditingController(text: widget.initial?.label ?? '');
   String? _emailError;
 
   @override
   void dispose() {
+    _label.dispose();
     _name.dispose();
     _phone.dispose();
     _email.dispose();
@@ -1153,9 +1215,21 @@ class _ContactEditorState extends State<_ContactEditor> {
     }
     final name = _name.text.trim();
     final phone = _phone.text.trim();
+    final label = _label.text.trim();
     widget.onSave(
-      widget.initial?.copyWith(name: name, phone: phone, email: email) ??
-          ClientContact(id: _uuid.v4(), name: name, phone: phone, email: email),
+      widget.initial?.copyWith(
+            name: name,
+            phone: phone,
+            email: email,
+            label: label,
+          ) ??
+          ClientContact(
+            id: _uuid.v4(),
+            name: name,
+            phone: phone,
+            email: email,
+            label: label,
+          ),
     );
   }
 
@@ -1196,6 +1270,28 @@ class _ContactEditorState extends State<_ContactEditor> {
               prefixIcon: Icon(Icons.person_outline),
             ),
             onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _label,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              labelText: 'Label (optional)',
+              hintText: 'e.g. Spouse, Pays',
+              prefixIcon: Icon(Icons.label_outline),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              for (final l in contactLabelSuggestions)
+                ActionChip(
+                  label: Text(l),
+                  onPressed: () => setState(() => _label.text = l),
+                ),
+            ],
           ),
           const SizedBox(height: 8),
           TextField(
@@ -1544,13 +1640,11 @@ class _JobsSectionState extends State<_JobsSection> {
   static String _miles(double m) => '${m.toStringAsFixed(1)} mi';
 
   Future<void> _schedule([ScheduledJob? existing]) async {
-    final result = await showDialog<_BookingResult>(
-      context: context,
-      builder: (_) => _BookingDialog(
-        existing: existing,
-        now: widget.now,
-        hourlyRate: widget.client.hourlyRate,
-      ),
+    final result = await showBookingDialog(
+      context,
+      existing: existing,
+      now: widget.now,
+      hourlyRate: widget.client.hourlyRate,
     );
     if (result == null) return;
     await widget.onSave((c) {
@@ -1931,16 +2025,18 @@ class _BillingDialog extends StatefulWidget {
 
 class _BillingDialogState extends State<_BillingDialog> {
   late BillingStatus _status = widget.initial.status;
-  late PaymentMethod? _method = widget.initial.method;
+  late PaymentDetails _paid = (
+    method: widget.initial.method,
+    date: widget.initial.paidOn ?? DateTime.now(),
+    amount: widget.initial.amount ?? widget.amount,
+  );
+
+  bool get _ready =>
+      _status != BillingStatus.paid ||
+      (_paid.method != null && _paid.amount != null);
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    Widget method(PaymentMethod m, String label) => ChoiceChip(
-      label: Text(label),
-      selected: _method == m,
-      onSelected: (_) => setState(() => _method = m),
-    );
     return AlertDialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       title: Text(
@@ -1950,45 +2046,29 @@ class _BillingDialogState extends State<_BillingDialog> {
       ),
       content: SizedBox(
         width: 400,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            SegmentedButton<BillingStatus>(
-              segments: [
-                for (final s in BillingStatus.values)
-                  ButtonSegment(value: s, label: Text(s.label)),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SegmentedButton<BillingStatus>(
+                segments: [
+                  for (final s in BillingStatus.values)
+                    ButtonSegment(value: s, label: Text(s.label)),
+                ],
+                selected: {_status},
+                showSelectedIcon: false,
+                onSelectionChanged: (v) => setState(() => _status = v.first),
+              ),
+              if (_status == BillingStatus.paid) ...[
+                const SizedBox(height: 16),
+                PaymentFields(
+                  initial: _paid,
+                  onChanged: (p) => setState(() => _paid = p),
+                ),
               ],
-              selected: {_status},
-              showSelectedIcon: false,
-              onSelectionChanged: (v) => setState(() => _status = v.first),
-            ),
-            if (_status == BillingStatus.paid) ...[
-              const SizedBox(height: 16),
-              Text('Paid with', style: theme.textTheme.titleSmall),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                children: [
-                  for (final m in PaymentMethod.values)
-                    if (!m.isStripe) method(m, m.label),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Text('Stripe', style: theme.textTheme.titleSmall),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                children: [
-                  method(PaymentMethod.stripeCard, 'Card'),
-                  method(PaymentMethod.stripeAffirm, 'Affirm'),
-                  method(PaymentMethod.stripeKlarna, 'Klarna'),
-                ],
-              ),
             ],
-          ],
+          ),
         ),
       ),
       actions: [
@@ -1997,14 +2077,22 @@ class _BillingDialogState extends State<_BillingDialog> {
           child: const Text('Cancel'),
         ),
         FilledButton(
-          // Paid needs a payment method.
-          onPressed: _status == BillingStatus.paid && _method == null
+          // Paid needs a payment method and amount.
+          onPressed: !_ready
               ? null
               : () => Navigator.of(context).pop(
-                  SessionBilling(
-                    status: _status,
-                    method: _status == BillingStatus.paid ? _method : null,
-                  ),
+                  _status == BillingStatus.paid
+                      ? SessionBilling(
+                          status: _status,
+                          method: _paid.method,
+                          paidOn: DateTime(
+                            _paid.date.year,
+                            _paid.date.month,
+                            _paid.date.day,
+                          ),
+                          amount: _paid.amount,
+                        )
+                      : SessionBilling(status: _status),
                 ),
           child: const Text('Save'),
         ),
@@ -2033,7 +2121,28 @@ class _Stat extends StatelessWidget {
   }
 }
 
-typedef _BookingResult = ({
+/// Book a session for a client (or edit [existing]): day, start and end
+/// time, notes. [initialStart] picks the time (e.g. a free spot tapped on
+/// the calendar); [clientName] shows whose session it is.
+Future<BookingResult?> showBookingDialog(
+  BuildContext context, {
+  ScheduledJob? existing,
+  required DateTime now,
+  required double hourlyRate,
+  DateTime? initialStart,
+  String? clientName,
+}) => showDialog<BookingResult>(
+  context: context,
+  builder: (_) => _BookingDialog(
+    existing: existing,
+    now: now,
+    hourlyRate: hourlyRate,
+    initialStart: initialStart,
+    clientName: clientName,
+  ),
+);
+
+typedef BookingResult = ({
   DateTime? start,
   DateTime? end,
   String notes,
@@ -2047,8 +2156,12 @@ class _BookingDialog extends StatefulWidget {
     required this.existing,
     required this.now,
     required this.hourlyRate,
+    this.initialStart,
+    this.clientName,
   });
 
+  final DateTime? initialStart;
+  final String? clientName;
   final ScheduledJob? existing;
   final DateTime now;
   final double hourlyRate;
@@ -2062,14 +2175,16 @@ class _BookingDialogState extends State<_BookingDialog> {
   static const _defaultLength = Duration(hours: 3);
 
   late DateTime _day = () {
-    final s = widget.existing?.start;
+    final s = widget.existing?.start ?? widget.initialStart;
     if (s != null) return DateTime(s.year, s.month, s.day);
     final tomorrow = widget.now.add(const Duration(days: 1));
     return DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
   }();
-  late TimeOfDay _start = widget.existing == null
-      ? const TimeOfDay(hour: 9, minute: 0)
-      : TimeOfDay.fromDateTime(widget.existing!.start);
+  late TimeOfDay _start = widget.existing != null
+      ? TimeOfDay.fromDateTime(widget.existing!.start)
+      : widget.initialStart != null
+      ? TimeOfDay.fromDateTime(widget.initialStart!)
+      : const TimeOfDay(hour: 9, minute: 0);
   late TimeOfDay _end = () {
     final e = widget.existing?.end;
     if (e != null) return TimeOfDay.fromDateTime(e);
@@ -2133,7 +2248,10 @@ class _BookingDialogState extends State<_BookingDialog> {
         (length.inMinutes / 60 * widget.hourlyRate * 100).round() / 100;
     return AlertDialog(
       title: Text(
-        widget.existing == null ? 'Schedule a session' : 'Edit session',
+        [
+          widget.existing == null ? 'Schedule a session' : 'Edit session',
+          if (widget.clientName != null) widget.clientName!,
+        ].join(' · '),
       ),
       content: SizedBox(
         width: 400,

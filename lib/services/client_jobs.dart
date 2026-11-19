@@ -206,6 +206,11 @@ SessionBilling billingFor(SavedAddress client, ClientJobEntry e) {
 /// What [e] bills: the booked time at [client]'s rate, or (not booked
 /// with an end time) the time spent with them. Null if neither is known.
 double? sessionAmount(SavedAddress client, ClientJobEntry e) {
+  // Once paid, what was actually received.
+  final paid = billingFor(client, e);
+  if (paid.status == BillingStatus.paid && paid.amount != null) {
+    return paid.amount;
+  }
   final booked = e.scheduled?.billFor(client.hourlyRate);
   if (booked != null) return booked;
   final t = e.withClient;

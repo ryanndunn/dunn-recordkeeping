@@ -11,7 +11,9 @@ typedef ClientInput = ({String name, String email, String phone, Place place});
 /// Returns null if cancelled.
 ///
 /// Pass [client] to edit one, or [initialPlace] to start a new client at an
-/// address the user already picked. An address counts as already picked
+/// address the user already picked. [prefill] fills in details someone
+/// gave (e.g. on the website's form); its address is shown as a hint to
+/// search for. An address counts as already picked
 /// only if it carries a Google place ID; older unverified entries must be
 /// searched again.
 Future<ClientInput?> showClientDialog(
@@ -20,6 +22,7 @@ Future<ClientInput?> showClientDialog(
   SavedAddress? client,
   Place? initialPlace,
   String saveLabel = 'Save',
+  ({String name, String phone, String email, String address})? prefill,
 }) {
   return showDialog<ClientInput>(
     context: context,
@@ -28,6 +31,7 @@ Future<ClientInput?> showClientDialog(
       client: client,
       initialPlace: client?.toPlace() ?? initialPlace,
       saveLabel: saveLabel,
+      prefill: prefill,
     ),
   );
 }
@@ -42,8 +46,10 @@ class _ClientDialog extends StatefulWidget {
     required this.client,
     required this.initialPlace,
     required this.saveLabel,
+    this.prefill,
   });
 
+  final ({String name, String phone, String email, String address})? prefill;
   final String title;
   final SavedAddress? client;
   final Place? initialPlace;
@@ -55,10 +61,18 @@ class _ClientDialog extends StatefulWidget {
 
 class _ClientDialogState extends State<_ClientDialog> {
   late final _name = TextEditingController(
-    text: widget.client?.name ?? widget.initialPlace?.label ?? '',
+    text:
+        widget.client?.name ??
+        widget.prefill?.name ??
+        widget.initialPlace?.label ??
+        '',
   );
-  late final _phone = TextEditingController(text: widget.client?.phone ?? '');
-  late final _email = TextEditingController(text: widget.client?.email ?? '');
+  late final _phone = TextEditingController(
+    text: widget.client?.phone ?? widget.prefill?.phone ?? '',
+  );
+  late final _email = TextEditingController(
+    text: widget.client?.email ?? widget.prefill?.email ?? '',
+  );
   late Place? _picked = widget.initialPlace?.placeId != null
       ? widget.initialPlace
       : null;
@@ -134,6 +148,15 @@ class _ClientDialogState extends State<_ClientDialog> {
                 onPicked: _onPicked,
                 onEdited: () => setState(() => _picked = null),
               ),
+              if (widget.prefill case final p?
+                  when p.address.isNotEmpty && _picked == null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'From the form: "${p.address}". Search for it to pick it '
+                  'from Google Maps.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
               if (_unverifiedOriginal && _picked == null) ...[
                 const SizedBox(height: 8),
                 Text(

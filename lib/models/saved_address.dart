@@ -137,6 +137,7 @@ class ClientContact {
     required this.name,
     this.phone = '',
     this.email = '',
+    this.label = '',
   });
 
   final String id;
@@ -144,19 +145,28 @@ class ClientContact {
   final String phone;
   final String email;
 
-  ClientContact copyWith({String? name, String? phone, String? email}) =>
-      ClientContact(
-        id: id,
-        name: name ?? this.name,
-        phone: phone ?? this.phone,
-        email: email ?? this.email,
-      );
+  /// Who they are to the client, e.g. "Spouse" or "Pays". May be empty.
+  final String label;
+
+  ClientContact copyWith({
+    String? name,
+    String? phone,
+    String? email,
+    String? label,
+  }) => ClientContact(
+    id: id,
+    name: name ?? this.name,
+    phone: phone ?? this.phone,
+    email: email ?? this.email,
+    label: label ?? this.label,
+  );
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
     if (phone.isNotEmpty) 'phone': phone,
     if (email.isNotEmpty) 'email': email,
+    if (label.isNotEmpty) 'label': label,
   };
 
   factory ClientContact.fromJson(Map<String, dynamic> json) => ClientContact(
@@ -164,6 +174,7 @@ class ClientContact {
     name: json['name'] as String? ?? '',
     phone: json['phone'] as String? ?? '',
     email: json['email'] as String? ?? '',
+    label: json['label'] as String? ?? '',
   );
 }
 
@@ -183,6 +194,7 @@ class SavedAddress {
     this.addressLabel = '',
     this.locations = const [],
     this.contacts = const [],
+    this.contactLabel = '',
     this.billing = const {},
     this.hourlyRate = defaultHourlyRate,
     this.policiesSignedOn,
@@ -219,6 +231,20 @@ class SavedAddress {
 
   /// Other people to reach about the client (and who may pay).
   final List<ClientContact> contacts;
+
+  /// The label on the client's own contact details (empty: "Primary").
+  final String contactLabel;
+
+  /// The client themself, as the first contact (ID [primaryContactId]).
+  ClientContact get primaryContact => ClientContact(
+    id: primaryContactId,
+    name: name,
+    phone: phone,
+    email: email,
+    label: contactLabel.isEmpty ? 'Primary' : contactLabel,
+  );
+
+  static const primaryContactId = 'primary';
 
   /// Billing status of each session, by session key (see
   /// `ClientJobEntry.billingKeys`).
@@ -317,6 +343,7 @@ class SavedAddress {
       addressLabel: first.label,
       locations: addresses.skip(1).toList(),
       contacts: contacts,
+      contactLabel: contactLabel,
       billing: billing,
       hourlyRate: hourlyRate,
       policiesSignedOn: policiesSignedOn,
@@ -339,6 +366,7 @@ class SavedAddress {
     String? addressLabel,
     List<ClientLocation>? locations,
     List<ClientContact>? contacts,
+    String? contactLabel,
     Map<String, SessionBilling>? billing,
     double? hourlyRate,
     DateTime? policiesSignedOn,
@@ -361,6 +389,7 @@ class SavedAddress {
     addressLabel: addressLabel ?? this.addressLabel,
     locations: locations ?? this.locations,
     contacts: contacts ?? this.contacts,
+    contactLabel: contactLabel ?? this.contactLabel,
     billing: billing ?? this.billing,
     hourlyRate: hourlyRate ?? this.hourlyRate,
     policiesSignedOn: clearPoliciesSigned
@@ -390,6 +419,7 @@ class SavedAddress {
     if (locations.isNotEmpty)
       'locations': [for (final l in locations) l.toJson()],
     if (contacts.isNotEmpty) 'contacts': [for (final c in contacts) c.toJson()],
+    if (contactLabel.isNotEmpty) 'contactLabel': contactLabel,
     if (billing.isNotEmpty)
       'billing': {for (final e in billing.entries) e.key: e.value.toJson()},
     // Left out at the default, so clients saved before rates existed
@@ -425,6 +455,7 @@ class SavedAddress {
       for (final c in (json['contacts'] as List?) ?? const [])
         ClientContact.fromJson(c as Map<String, dynamic>),
     ],
+    contactLabel: json['contactLabel'] as String? ?? '',
     billing: {
       for (final e
           in ((json['billing'] as Map<String, dynamic>?) ?? const {}).entries)

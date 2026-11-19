@@ -4,7 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:mileage_log/app.dart';
-import 'package:mileage_log/services/availability_link.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
+import 'package:http/http.dart' as http;
+import 'package:mileage_log/services/google_account.dart';
+import 'package:mileage_log/services/google_calendar.dart';
+import 'package:mileage_log/state/calendar_provider.dart';
 import 'package:mileage_log/models/place.dart';
 import 'package:mileage_log/services/distance_service.dart';
 import 'package:mileage_log/services/local_store.dart';
@@ -63,6 +67,7 @@ Future<void> pumpApp(
   bool withGoogle = true,
   DistanceService? distance,
   bool openLogTrip = true,
+  List<Override> overrides = const [],
 }) async {
   // A tall window, so the Mileage Log's trip list (below the job card)
   // is on screen. Tests that set their own size keep it.
@@ -91,6 +96,7 @@ Future<void> pumpApp(
                   : const DemoDistanceService()),
         ),
         clockProvider.overrideWithValue(() => DateTime(2026, 11, 14, 10)),
+        ...overrides,
       ],
       child: const MileageApp(),
     ),
@@ -382,8 +388,8 @@ void main() {
     // The client's page shows the details.
     await tester.tap(find.text('Jane Smith'));
     await tester.pumpAndSettle();
-    expect(find.text('jane@example.com'), findsOneWidget);
-    expect(find.text('(309) 555-0142'), findsOneWidget);
+    expect(find.text('(309) 555-0142\njane@example.com'), findsOneWidget);
+    expect(find.text('Primary'), findsOneWidget);
   });
 
   testWidgets('the app opens on Clients', (tester) async {
@@ -424,25 +430,39 @@ void main() {
     expect(action('Call').onPressed, isNull);
     expect(action('Directions').onPressed, isNotNull);
 
-    // Add a phone number in place.
-    await tester.tap(find.text('Add a phone number'));
+    // The client is the first contact, labelled Primary. Add a phone.
+    expect(find.text('Primary'), findsOneWidget);
+    await tester.tap(find.text('Tap to add a phone number or email'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.widgetWithText(TextField, 'Phone'), '555-0100');
-    await tester.tap(find.byTooltip('Save phone'));
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Phone (optional)'),
+      '555-0100',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
     expect(find.text('555-0100'), findsOneWidget);
     expect(action('Call').onPressed, isNotNull);
 
-    // A bad email is refused; the old value stays.
-    await tester.tap(find.byTooltip('Edit email'));
+    // A bad email is refused, and the label can be changed.
+    await tester.tap(find.text('555-0100'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.widgetWithText(TextField, 'Email'), 'nope');
-    await tester.testTextInput.receiveAction(TextInputAction.done);
+    expect(find.byTooltip('Remove this contact'), findsNothing);
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Email (optional)'),
+      'nope',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
     expect(find.text('Check the email address'), findsOneWidget);
-    await tester.tap(find.byTooltip('Cancel'));
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Email (optional)'),
+      '',
+    );
+    await tester.tap(find.widgetWithText(ActionChip, 'Pays'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
-    expect(find.text('Add an email address'), findsOneWidget);
+    expect(find.text('Pays'), findsOneWidget);
+    expect(find.text('Primary'), findsNothing);
 
     // Renaming updates the page and the list.
     await tester.tap(find.byTooltip('Edit name'));
@@ -583,14 +603,20 @@ void main() {
     // Signing the policy doc (its own section) makes them active, and the
     // section moves to the bottom of the page.
     double top(Finder f) => tester.getTopLeft(f).dy;
-    expect(top(find.text('Not signed yet')) < top(find.text('Contacts')), isTrue);
+    expect(
+      top(find.text('Not signed yet')) < top(find.text('Contacts')),
+      isTrue,
+    );
     await tester.tap(find.widgetWithText(FilledButton, 'Mark signed'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('OK'));
     await tester.pumpAndSettle();
     expect(find.text('Active'), findsOneWidget);
     expect(find.text('Signed 11/14/26'), findsOneWidget);
-    expect(top(find.text('Signed 11/14/26')) > top(find.text('Sessions')), isTrue);
+    expect(
+      top(find.text('Signed 11/14/26')) > top(find.text('Sessions')),
+      isTrue,
+    );
 
     await goBack(tester);
     await chooseStatus(tester, 'Active (1)');
@@ -822,16 +848,133 @@ void main() {
     expect(find.text('Dentist'), findsNothing);
   });
 
-  testWidgets('Availability in the menu opens Google Calendar and stays on '
-      'the current tab', (tester) async {
-    await pumpApp(tester, _savedPrefs, openLogTrip: false);
-    expect(
-      availabilityEditorUri.toString(),
-      'https://calendar.google.com/calendar/u/0/r/appointment?pli=1',
+  testWidgets('Calendar shows Google events with booked sessions, and '
+      'books a session in a free spot', (tester) async {
+    final prefs = {
+      ..._savedPrefs,
+      'addresses_v1': jsonEncode([
+        for (final c
+            in jsonDecode(_savedPrefs['addresses_v1']! as String) as List)
+          if ((c as Map<String, dynamic>)['id'] == 'c')
+            {
+              ...c,
+              'scheduled': [
+                {
+                  'id': 's1',
+                  'start': '2026-11-12T13:00:00',
+                  'end': '2026-11-12T15:00:00',
+                },
+              ],
+            }
+          else
+            c,
+      ]),
+    };
+    await pumpApp(
+      tester,
+      prefs,
+      openLogTrip: false,
+      overrides: [
+        googleAccountServiceProvider.overrideWithValue(_CalendarAccount()),
+        calendarSourceFactoryProvider.overrideWithValue((_) => _FakeCalendar()),
+      ],
     );
-    await tester.tap(find.text('Availability'));
+    await tester.tap(find.text('Calendar'));
     await tester.pumpAndSettle();
-    expect(find.widgetWithText(AppBar, 'Clients'), findsOneWidget);
+
+    // The week of Sun 11/8, with a personal event and Clinic's session.
+    expect(find.text('Nov 8 – 14, 2026'), findsOneWidget);
+    expect(find.textContaining('Pilates'), findsOneWidget);
+    expect(find.text('Clinic\n1:00 PM – 3:00 PM'), findsOneWidget);
+    expect(find.text('Consultation Availability'), findsOneWidget);
+
+    // Tap Saturday at 2 PM (an open spot) to book Dentist there.
+    final saturday = find
+        .byWidgetPredicate((w) => w.runtimeType.toString() == '_DayColumn')
+        .at(6);
+    final top = tester.getTopLeft(saturday);
+    await tester.tapAt(top + const Offset(20, 14 * 48 + 10));
+    await tester.pumpAndSettle();
+    expect(find.text('Book a session at 2:00 PM, Sat 11/14'), findsOneWidget);
+    await tester.tap(find.text('Dentist'));
+    await tester.pumpAndSettle();
+    expect(find.text('Schedule a session · Dentist'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Dentist\n2:00 PM – 5:00 PM'), findsOneWidget);
+
+    // Tapping a session opens the client.
+    await tester.tap(find.text('Clinic\n1:00 PM – 3:00 PM'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(AppBar, 'Clinic'), findsOneWidget);
+    expect(find.byType(NavigationBar), findsOneWidget);
+  });
+
+  testWidgets('a paid session and an added expense show in Payments', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 2200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final prefs = {
+      ..._savedPrefs,
+      'addresses_v1': jsonEncode([
+        for (final c
+            in jsonDecode(_savedPrefs['addresses_v1']! as String) as List)
+          if ((c as Map<String, dynamic>)['id'] == 'c')
+            {
+              ...c,
+              'scheduled': [
+                {
+                  'id': 's1',
+                  'start': '2026-11-10T09:00:00',
+                  'end': '2026-11-10T12:00:00',
+                },
+              ],
+            }
+          else
+            c,
+      ]),
+    };
+    await pumpApp(tester, prefs, openLogTrip: false);
+
+    // Mark Clinic's session paid by Zelle.
+    await tester.tap(find.text('Clinic'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Need to bill'));
+    await tester.tap(find.text('Need to bill'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Paid').last);
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(TextField, '225'), findsOneWidget);
+    await tester.tap(find.text('Zelle'));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save').last);
+    await tester.pumpAndSettle();
+    await goBack(tester);
+
+    await tester.tap(find.text('Payments').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Session 11/10/26'), findsOneWidget);
+    expect(find.text('\$225.00'), findsWidgets);
+    expect(find.text('received in 2026'), findsOneWidget);
+
+    // Add an expense.
+    await tester.tap(find.text('Expenses (0)'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add expense'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Paid to'), 'Canva');
+    await tester.enterText(find.widgetWithText(TextField, 'Amount'), '12.99');
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Canva'), findsOneWidget);
+    expect(
+      find.text('\$212.01'),
+      findsOneWidget,
+      reason: 'income less expenses',
+    );
   });
 
   testWidgets('the client list can be searched and sorted', (tester) async {
@@ -864,4 +1007,41 @@ void main() {
     await tester.pumpAndSettle();
     expect(top('Dentist') < top('Clinic'), isTrue);
   });
+}
+
+/// Signed out, but with calendar access (enough for the Calendar tab).
+class _CalendarAccount implements GoogleAccountService {
+  @override
+  Future<GoogleSession?> restore() async => null;
+  @override
+  Future<GoogleSession> signIn() => throw UnimplementedError();
+  @override
+  Future<void> signOut() async {}
+  @override
+  Future<http.Client> grantAccess(String scope) async => http.Client();
+  @override
+  Future<http.Client?> access(String scope) async =>
+      scope == calendarScope ? http.Client() : null;
+}
+
+class _FakeCalendar implements CalendarSource {
+  @override
+  Future<List<CalendarInfo>> calendars() async => const [
+    CalendarInfo(id: 'me', name: 'Personal', color: 0xFF7986CB),
+  ];
+
+  @override
+  Future<List<CalendarEvent>> events(
+    List<String> ids,
+    DateTime from,
+    DateTime to,
+  ) async => [
+    CalendarEvent(
+      id: 'e1',
+      calendarId: 'me',
+      title: 'Pilates',
+      start: DateTime(2026, 11, 13, 10),
+      end: DateTime(2026, 11, 13, 11),
+    ),
+  ];
 }

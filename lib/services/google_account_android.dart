@@ -102,6 +102,70 @@ class AndroidGoogleAccountService implements GoogleAccountService {
     }
   }
 
+  /// A client for [scopes] on [email]'s account, if already granted.
+  Future<http.Client?> _clientFor(List<String> scopes, String email) async {
+    Future<String?> token() async {
+      final tokens = await GoogleSignInPlatform.instance
+          .clientAuthorizationTokensForScopes(
+            ClientAuthorizationTokensForScopesParameters(
+              request: AuthorizationRequestDetails(
+                scopes: scopes,
+                userId: null,
+                email: email,
+                promptIfUnauthorized: false,
+              ),
+            ),
+          );
+      return tokens?.accessToken;
+    }
+
+    try {
+      await _init();
+      if (await token() == null) return null;
+    } on GoogleSignInException {
+      return null;
+    }
+    return _TokenClient(() async {
+      final t = await token();
+      if (t == null) {
+        throw const GoogleAccountException(
+          'Access was removed. Connect it again.',
+        );
+      }
+      return t;
+    });
+  }
+
+  @override
+  Future<http.Client?> access(String scope) async {
+    final email = rememberedEmail();
+    return email == null ? null : _clientFor([scope], email);
+  }
+
+  @override
+  Future<http.Client> grantAccess(String scope) async {
+    try {
+      await _init();
+      final account =
+          await _signIn.attemptLightweightAuthentication() ??
+          await _signIn.authenticate(scopeHint: googleScopes);
+      await account.authorizationClient.authorizeScopes([scope]);
+      final client = await _clientFor([scope], account.email);
+      if (client == null) {
+        throw const GoogleAccountException('Access wasn\'t granted.');
+      }
+      return client;
+    } on GoogleSignInException catch (e) {
+      throw GoogleAccountException(
+        e.code == GoogleSignInExceptionCode.canceled
+            ? 'Cancelled.'
+            : 'Google didn\'t grant access: '
+                  '${e.description ?? e.code.name}',
+        cancelled: e.code == GoogleSignInExceptionCode.canceled,
+      );
+    }
+  }
+
   @override
   Future<void> signOut() async {
     await _init();

@@ -6,6 +6,7 @@ import '../../services/client_list.dart';
 import '../../state/providers.dart';
 import '../../widgets/client_dialog.dart';
 import '../../widgets/page_body.dart';
+import '../policy_docs/signed_docs_page.dart';
 import 'client_page.dart';
 import 'client_status.dart';
 
@@ -128,184 +129,207 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen> {
         icon: const Icon(Icons.person_add_alt_1),
         label: const Text('Add client'),
       ),
-      body: all.isEmpty
-          ? const Padding(
-              padding: EdgeInsets.all(24),
-              child: Text(
-                'Add your clients and where you meet them. Trips to a '
-                'client\'s address are logged with the driving miles.',
-              ),
-            )
-          : LayoutBuilder(
-              builder: (context, constraints) {
-                final width = constraints.maxWidth;
-                final small = Theme.of(context).textTheme.bodyMedium;
-                const pill = OutlineInputBorder(
-                  borderRadius: BorderRadius.all(Radius.circular(28)),
-                );
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Padding(
-                      padding: readablePadding(
-                        width,
-                        const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                      ),
-                      child: Row(
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SignedDocsBanner(),
+          Expanded(
+            child: all.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text(
+                      'Add your clients and where you meet them. Trips to a '
+                      'client\'s address are logged with the driving miles.',
+                    ),
+                  )
+                : LayoutBuilder(
+                    builder: (context, constraints) {
+                      final width = constraints.maxWidth;
+                      final small = Theme.of(context).textTheme.bodyMedium;
+                      const pill = OutlineInputBorder(
+                        borderRadius: BorderRadius.all(Radius.circular(28)),
+                      );
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          SizedBox(
-                            width: width < 480 ? 150 : 210,
-                            child: DropdownButtonFormField<int>(
-                              initialValue: _show?.index ?? -1,
-                              isExpanded: true,
-                              style: small,
-                              decoration: const InputDecoration(
-                                border: pill,
-                                isDense: true,
-                                contentPadding: EdgeInsets.fromLTRB(
-                                  16,
-                                  12,
-                                  8,
-                                  12,
-                                ),
-                              ),
-                              // Closed, it shows the short name and count.
-                              selectedItemBuilder: (_) => [
-                                Text(
-                                  'All clients ($current)',
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                for (final s in ClientStatus.values)
-                                  Text(
-                                    '${s.shortLabel} (${count(s)})',
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                              ],
-                              items: [
-                                DropdownMenuItem(
-                                  value: -1,
-                                  child: Text('All clients ($current)'),
-                                ),
-                                for (final s in ClientStatus.values)
-                                  DropdownMenuItem(
-                                    value: s.index,
-                                    child: Row(
-                                      children: [
-                                        Icon(statusIcon(s), size: 18),
-                                        const SizedBox(width: 8),
-                                        Flexible(
-                                          child: Text(
-                                            '${s.label} (${count(s)})',
-                                            overflow: TextOverflow.ellipsis,
+                          Padding(
+                            padding: readablePadding(
+                              width,
+                              const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                            ),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: width < 480 ? 150 : 210,
+                                  child: DropdownButtonFormField<int>(
+                                    initialValue: _show?.index ?? -1,
+                                    isExpanded: true,
+                                    style: small,
+                                    decoration: const InputDecoration(
+                                      border: pill,
+                                      isDense: true,
+                                      contentPadding: EdgeInsets.fromLTRB(
+                                        16,
+                                        12,
+                                        8,
+                                        12,
+                                      ),
+                                    ),
+                                    // Closed, it shows the short name and count.
+                                    selectedItemBuilder: (_) => [
+                                      Text(
+                                        'All clients ($current)',
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      for (final s in ClientStatus.values)
+                                        Text(
+                                          '${s.shortLabel} (${count(s)})',
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                    ],
+                                    items: [
+                                      DropdownMenuItem(
+                                        value: -1,
+                                        child: Text('All clients ($current)'),
+                                      ),
+                                      for (final s in ClientStatus.values)
+                                        DropdownMenuItem(
+                                          value: s.index,
+                                          child: Row(
+                                            children: [
+                                              Icon(statusIcon(s), size: 18),
+                                              const SizedBox(width: 8),
+                                              Flexible(
+                                                child: Text(
+                                                  '${s.label} (${count(s)})',
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
-                                      ],
+                                    ],
+                                    onChanged: (i) => setState(
+                                      () => _show = i == null || i < 0
+                                          ? null
+                                          : ClientStatus.values[i],
                                     ),
                                   ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    controller: _search,
+                                    style: small,
+                                    textInputAction: TextInputAction.search,
+                                    decoration: InputDecoration(
+                                      hintText: 'Search clients',
+                                      hintStyle: small,
+                                      prefixIcon: const Icon(
+                                        Icons.search,
+                                        size: 20,
+                                      ),
+                                      suffixIcon: query.isEmpty
+                                          ? null
+                                          : IconButton(
+                                              tooltip: 'Clear search',
+                                              icon: const Icon(
+                                                Icons.close,
+                                                size: 20,
+                                              ),
+                                              onPressed: () => setState(
+                                                () => _search.clear(),
+                                              ),
+                                            ),
+                                      border: pill,
+                                      isDense: true,
+                                    ),
+                                    onChanged: (_) => setState(() {}),
+                                  ),
+                                ),
                               ],
-                              onChanged: (i) => setState(
-                                () => _show = i == null || i < 0
-                                    ? null
-                                    : ClientStatus.values[i],
-                              ),
                             ),
                           ),
-                          const SizedBox(width: 8),
                           Expanded(
-                            child: TextField(
-                              controller: _search,
-                              style: small,
-                              textInputAction: TextInputAction.search,
-                              decoration: InputDecoration(
-                                hintText: 'Search clients',
-                                hintStyle: small,
-                                prefixIcon: const Icon(Icons.search, size: 20),
-                                suffixIcon: query.isEmpty
-                                    ? null
-                                    : IconButton(
-                                        tooltip: 'Clear search',
-                                        icon: const Icon(Icons.close, size: 20),
-                                        onPressed: () =>
-                                            setState(() => _search.clear()),
-                                      ),
-                                border: pill,
-                                isDense: true,
-                              ),
-                              onChanged: (_) => setState(() {}),
-                            ),
+                            child: clients.isEmpty
+                                ? Padding(
+                                    padding: readablePadding(
+                                      width,
+                                      const EdgeInsets.all(24),
+                                    ),
+                                    child: Text(
+                                      query.trim().isNotEmpty
+                                          ? 'No clients match "${query.trim()}"'
+                                                '${_show == null ? '' : ' in "${_show!.label}"'}.'
+                                          : _show == null
+                                          ? 'Everyone is archived.'
+                                          : 'No clients are "${_show!.label}".',
+                                    ),
+                                  )
+                                : ListView.separated(
+                                    padding: readablePadding(
+                                      width,
+                                      const EdgeInsets.only(bottom: 88),
+                                    ),
+                                    itemCount: clients.length,
+                                    separatorBuilder: (_, _) =>
+                                        const Divider(height: 1),
+                                    itemBuilder: (context, i) {
+                                      final c = clients[i];
+                                      return Dismissible(
+                                        key: ValueKey(c.id),
+                                        direction: DismissDirection.endToStart,
+                                        background: Container(
+                                          alignment: Alignment.centerRight,
+                                          padding: const EdgeInsets.only(
+                                            right: 16,
+                                          ),
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .errorContainer,
+                                          child: const Icon(
+                                            Icons.delete_outline,
+                                          ),
+                                        ),
+                                        confirmDismiss: (_) =>
+                                            _confirmDelete(context, c),
+                                        onDismissed: (_) => ref
+                                            .read(addressesProvider.notifier)
+                                            .remove(c.id),
+                                        child: _ClientTile(
+                                          client: c,
+                                          onTap: () => _openClient(context, c),
+                                          onCall: c.phone.isEmpty
+                                              ? null
+                                              : () => openClientLink(
+                                                  context,
+                                                  Uri(
+                                                    scheme: 'tel',
+                                                    path: c.phone,
+                                                  ),
+                                                ),
+                                          onEmail: c.email.isEmpty
+                                              ? null
+                                              : () => openClientLink(
+                                                  context,
+                                                  Uri(
+                                                    scheme: 'mailto',
+                                                    path: c.email,
+                                                  ),
+                                                ),
+                                        ),
+                                      );
+                                    },
+                                  ),
                           ),
                         ],
-                      ),
-                    ),
-                    Expanded(
-                      child: clients.isEmpty
-                          ? Padding(
-                              padding: readablePadding(
-                                width,
-                                const EdgeInsets.all(24),
-                              ),
-                              child: Text(
-                                query.trim().isNotEmpty
-                                    ? 'No clients match "${query.trim()}"'
-                                          '${_show == null ? '' : ' in "${_show!.label}"'}.'
-                                    : _show == null
-                                    ? 'Everyone is archived.'
-                                    : 'No clients are "${_show!.label}".',
-                              ),
-                            )
-                          : ListView.separated(
-                              padding: readablePadding(
-                                width,
-                                const EdgeInsets.only(bottom: 88),
-                              ),
-                              itemCount: clients.length,
-                              separatorBuilder: (_, _) =>
-                                  const Divider(height: 1),
-                              itemBuilder: (context, i) {
-                                final c = clients[i];
-                                return Dismissible(
-                                  key: ValueKey(c.id),
-                                  direction: DismissDirection.endToStart,
-                                  background: Container(
-                                    alignment: Alignment.centerRight,
-                                    padding: const EdgeInsets.only(right: 16),
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .errorContainer,
-                                    child: const Icon(Icons.delete_outline),
-                                  ),
-                                  confirmDismiss: (_) =>
-                                      _confirmDelete(context, c),
-                                  onDismissed: (_) => ref
-                                      .read(addressesProvider.notifier)
-                                      .remove(c.id),
-                                  child: _ClientTile(
-                                    client: c,
-                                    onTap: () => _openClient(context, c),
-                                    onCall: c.phone.isEmpty
-                                        ? null
-                                        : () => openClientLink(
-                                            context,
-                                            Uri(scheme: 'tel', path: c.phone),
-                                          ),
-                                    onEmail: c.email.isEmpty
-                                        ? null
-                                        : () => openClientLink(
-                                            context,
-                                            Uri(
-                                              scheme: 'mailto',
-                                              path: c.email,
-                                            ),
-                                          ),
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                  ],
-                );
-              },
-            ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }

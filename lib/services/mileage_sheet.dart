@@ -19,6 +19,36 @@ const sheetHeaders = <String>[
 ];
 
 const logTabTitle = 'Mileage Log';
+const paymentsTabTitle = 'Payments';
+const expensesTabTitle = 'Expenses';
+const _paymentsSheetId = 4;
+const _expensesSheetId = 5;
+
+/// The spreadsheet's name once it's the business record.
+const recordsSpreadsheetTitle = 'Dunn Record Keeping - Business Records';
+
+/// Payments tab: one row per payment received. The ID column is hidden.
+const paymentHeaders = <String>[
+  'Date',
+  'Received from',
+  'For',
+  'Source',
+  'Method',
+  'Amount',
+  'Notes',
+  'ID',
+];
+
+/// Expenses tab: one row per business expense. The ID column is hidden.
+const expenseHeaders = <String>[
+  'Date',
+  'Paid to',
+  'Category',
+  'Paid with',
+  'Amount',
+  'Notes',
+  'ID',
+];
 const jobsTabTitle = 'Sessions';
 const summaryTabTitle = 'Summary';
 const _logSheetId = 1;
@@ -111,7 +141,28 @@ abstract class MileageSheet {
   /// Jobs tab if missing, and fixes the trip rows' look (see
   /// [restyleRequests]).
   Future<void> restyle(String spreadsheetId);
+
+  /// The rows (header first) of each tab Google Forms adds when a form
+  /// is linked to this spreadsheet ("Form Responses 1", "Form Responses
+  /// 2", …), by tab name. Empty if no form is linked.
+  Future<Map<String, List<List<String>>>> readFormTabs(String spreadsheetId);
+
+  /// Makes the spreadsheet a business record: adds the Payments and
+  /// Expenses tabs if missing, rewrites the Summary as a tax summary, and
+  /// renames the file.
+  Future<void> upgradeToRecords(String spreadsheetId);
+
+  /// Replaces the Payments and Expenses tabs' rows (the app keeps them).
+  Future<void> writeLedger(
+    String spreadsheetId, {
+    required List<List<Object>> payments,
+    required List<List<Object>> expenses,
+  });
 }
+
+/// True for the tab Google Forms creates for its responses.
+bool isFormResponsesTab(String title) =>
+    title.toLowerCase().startsWith('form responses');
 
 class GoogleMileageSheet implements MileageSheet {
   GoogleMileageSheet(http.Client client) : _api = sheets.SheetsApi(client);
@@ -307,6 +358,138 @@ class GoogleMileageSheet implements MileageSheet {
     await _api.spreadsheets.batchUpdate(
       sheets.BatchUpdateSpreadsheetRequest(
         requests: [...restyleRequests(), if (!hasJobs) ...jobsFormatRequests()],
+      ),
+      spreadsheetId,
+    );
+  });
+
+  @override
+  Future<Map<String, List<List<String>>>> readFormTabs(String spreadsheetId) =>
+      _guard(() async {
+        final existing = await _api.spreadsheets.get(
+          spreadsheetId,
+          $fields: 'sheets.properties(title)',
+        );
+        final titles = [
+          for (final s in existing.sheets ?? const <sheets.Sheet>[])
+            if (isFormResponsesTab(s.properties?.title ?? ''))
+              s.properties!.title!,
+        ];
+        final out = <String, List<List<String>>>{};
+        for (final title in titles) {
+          final range = await _api.spreadsheets.values.get(
+            spreadsheetId,
+            "'$title'",
+          );
+          out[title] = [
+            for (final row in range.values ?? const <List<Object?>>[])
+              [for (final cell in row) '${cell ?? ''}'],
+          ];
+        }
+        return out;
+      });
+
+  @override
+  Future<void> upgradeToRecords(String spreadsheetId) => _guard(() async {
+    final existing = await _api.spreadsheets.get(
+      spreadsheetId,
+      $fields: 'sheets.properties(sheetId,title)',
+    );
+    final ids = {
+      for (final s in existing.sheets ?? const <sheets.Sheet>[])
+        s.properties?.sheetId,
+    };
+    final add = [
+      if (!ids.contains(_paymentsSheetId))
+        _plainTab(_paymentsSheetId, paymentsTabTitle, paymentHeaders, 3),
+      if (!ids.contains(_expensesSheetId))
+        _plainTab(_expensesSheetId, expensesTabTitle, expenseHeaders, 4),
+    ];
+    await _api.spreadsheets.batchUpdate(
+      sheets.BatchUpdateSpreadsheetRequest(
+        requests: [
+          for (final tab in add)
+            sheets.Request(
+              addSheet: sheets.AddSheetRequest(properties: tab.properties),
+            ),
+          sheets.Request(
+            updateSpreadsheetProperties:
+                sheets.UpdateSpreadsheetPropertiesRequest(
+                  properties: sheets.SpreadsheetProperties(
+                    title: recordsSpreadsheetTitle,
+                  ),
+                  fields: 'title',
+                ),
+          ),
+        ],
+      ),
+      spreadsheetId,
+    );
+    // The Summary is rewritten from scratch.
+    await _api.spreadsheets.values.clear(
+      sheets.ClearValuesRequest(),
+      spreadsheetId,
+      "'$summaryTabTitle'",
+    );
+    await _api.spreadsheets.values.batchUpdate(
+      sheets.BatchUpdateValuesRequest(
+        valueInputOption: 'USER_ENTERED',
+        data: [
+          sheets.ValueRange(
+            range: "'$paymentsTabTitle'!A1",
+            values: [paymentHeaders],
+          ),
+          sheets.ValueRange(
+            range: "'$expensesTabTitle'!A1",
+            values: [expenseHeaders],
+          ),
+          sheets.ValueRange(
+            range: "'$summaryTabTitle'!A1",
+            values: taxSummaryValues(),
+          ),
+        ],
+      ),
+      spreadsheetId,
+    );
+    await _api.spreadsheets.batchUpdate(
+      sheets.BatchUpdateSpreadsheetRequest(
+        requests: [
+          if (!ids.contains(_paymentsSheetId)) ...paymentsFormatRequests(),
+          if (!ids.contains(_expensesSheetId)) ...expensesFormatRequests(),
+          ...taxSummaryFormatRequests(),
+        ],
+      ),
+      spreadsheetId,
+    );
+  });
+
+  @override
+  Future<void> writeLedger(
+    String spreadsheetId, {
+    required List<List<Object>> payments,
+    required List<List<Object>> expenses,
+  }) => _guard(() async {
+    await _api.spreadsheets.values.batchClear(
+      sheets.BatchClearValuesRequest(
+        ranges: ["'$paymentsTabTitle'!A2:Z", "'$expensesTabTitle'!A2:Z"],
+      ),
+      spreadsheetId,
+    );
+    await _api.spreadsheets.values.batchUpdate(
+      sheets.BatchUpdateValuesRequest(
+        valueInputOption: 'USER_ENTERED',
+        data: [
+          if (payments.isNotEmpty)
+            sheets.ValueRange(
+              range: "'$paymentsTabTitle'!A2",
+              values: payments,
+            ),
+          if (expenses.isNotEmpty)
+            sheets.ValueRange(
+              range: "'$expensesTabTitle'!A2",
+              values: expenses,
+            ),
+        ],
       ),
       spreadsheetId,
     );
@@ -649,5 +832,249 @@ List<List<Object>> summaryValues(double? ratePerMile) {
       'Includes trips marked "Estimate" in the Source column, which were '
           'logged before Google driving distances were set up.',
     ],
+  ];
+}
+
+sheets.Sheet _plainTab(int id, String title, List<String> headers, int index) =>
+    sheets.Sheet(
+      properties: sheets.SheetProperties(
+        sheetId: id,
+        title: title,
+        index: index,
+        gridProperties: sheets.GridProperties(
+          frozenRowCount: 1,
+          columnCount: headers.length,
+        ),
+      ),
+    );
+
+sheets.Request _hideColumn(int sheetId, int col) => sheets.Request(
+  updateDimensionProperties: sheets.UpdateDimensionPropertiesRequest(
+    range: sheets.DimensionRange(
+      sheetId: sheetId,
+      dimension: 'COLUMNS',
+      startIndex: col,
+      endIndex: col + 1,
+    ),
+    properties: sheets.DimensionProperties(hiddenByUser: true),
+    fields: 'hiddenByUser',
+  ),
+);
+
+List<sheets.Request> _ledgerTabFormat(
+  int sheetId,
+  int columns,
+  int amountCol,
+  List<int> widths,
+) => [
+  _bold(sheetId, row: 0, background: _green, foreground: _white),
+  dataRowsStyle(sheetId: sheetId, columns: columns),
+  sheets.Request(
+    addBanding: sheets.AddBandingRequest(
+      bandedRange: sheets.BandedRange(
+        range: _range(sheetId, startCol: 0, endCol: columns),
+        rowProperties: sheets.BandingProperties(
+          headerColorStyle: _color(_green),
+          firstBandColorStyle: _color(_white),
+          secondBandColorStyle: _color(_lightGreen),
+        ),
+      ),
+    ),
+  ),
+  _numberFormat(sheetId, 0, 'DATE', 'mm/dd/yy'),
+  _numberFormat(sheetId, amountCol, 'CURRENCY', r'"$"#,##0.00'),
+  for (final (i, px) in widths.indexed) _width(sheetId, i, px),
+  _hideColumn(sheetId, columns - 1),
+];
+
+List<sheets.Request> paymentsFormatRequests() => _ledgerTabFormat(
+  _paymentsSheetId,
+  paymentHeaders.length,
+  5,
+  [100, 220, 240, 190, 130, 100, 240],
+);
+
+List<sheets.Request> expensesFormatRequests() => _ledgerTabFormat(
+  _expensesSheetId,
+  expenseHeaders.length,
+  4,
+  [100, 220, 210, 130, 100, 280],
+);
+
+/// Rows (1-based) of the tax summary's parts.
+const _monthsRow = 7; // January
+const _totalRow = 19;
+const _categoryRow = 28; // first expense category
+const _expenseCategories = [
+  'Advertising & marketing',
+  'Supplies',
+  'Software & subscriptions',
+  'Office expenses',
+  'Education & training',
+  'Business meals',
+  'Insurance',
+  'Bank & payment fees',
+  'Legal & professional',
+  'Travel (not mileage)',
+  'Phone & internet',
+  'Other',
+];
+const _incomeSources = ['Client session', "Let's Get This Dunn Club", 'Other'];
+int get _sourceRow => _categoryRow + _expenseCategories.length + 2;
+
+/// The rates table's header row (1-based); rates follow it.
+int get _ratesRow => _sourceRow + _incomeSources.length + 2;
+
+/// The Summary tab: income, expenses and mileage by month for one year,
+/// expenses by category, income by source, and the IRS mileage rates the
+/// deduction uses. Everything is a formula over the other tabs.
+List<List<Object>> taxSummaryValues() {
+  const log = "'$logTabTitle'";
+  const pay = "'$paymentsTabTitle'";
+  const exp = "'$expensesTabTitle'";
+  String inMonth(String tab, String dateCol, int r) =>
+      '$tab!\$$dateCol:\$$dateCol,">="&\$A$r,'
+      '$tab!\$$dateCol:\$$dateCol,"<"&EDATE(\$A$r,1)';
+  const inYear =
+      '">="&DATE(\$B\$3,1,1),'
+      'TAB!\$A:\$A,"<"&DATE(\$B\$3+1,1,1)';
+  String year(String tab) => 'TAB!\$A:\$A,$inYear'.replaceAll('TAB', tab);
+  final rates = '\$A\$${_ratesRow + 1}:\$C\$${_ratesRow + 10}';
+  return [
+    ['Tax summary'],
+    [
+      'Payments, expenses and mileage for the year below. The app fills in '
+          'the Payments, Expenses and Mileage Log tabs.',
+    ],
+    ['Year', '=YEAR(TODAY())', 'Change the year to see another year'],
+    [],
+    [
+      'Month',
+      'Income',
+      'Expenses',
+      'Income less expenses',
+      'Miles',
+      'Mileage deduction',
+    ],
+    [],
+    for (var m = 1; m <= 12; m++)
+      () {
+        final r = _monthsRow + m - 1;
+        return [
+          '=DATE(\$B\$3,$m,1)',
+          '=SUMIFS($pay!\$F:\$F,${inMonth(pay, 'A', r)})',
+          '=SUMIFS($exp!\$E:\$E,${inMonth(exp, 'A', r)})',
+          '=B$r-C$r',
+          '=SUMIFS($log!\$F:\$F,${inMonth(log, 'A', r)})',
+          '=IFERROR(E$r*VLOOKUP(\$B\$3,$rates,IF(MONTH(A$r)<=6,2,3),FALSE),"")',
+        ];
+      }(),
+    [
+      'Total',
+      '=SUM(B$_monthsRow:B${_totalRow - 1})',
+      '=SUM(C$_monthsRow:C${_totalRow - 1})',
+      '=SUM(D$_monthsRow:D${_totalRow - 1})',
+      '=SUM(E$_monthsRow:E${_totalRow - 1})',
+      '=SUM(F$_monthsRow:F${_totalRow - 1})',
+    ],
+    [],
+    ['For your taxes'],
+    ['Income', '=B$_totalRow'],
+    ['Business expenses', '=C$_totalRow'],
+    ['Mileage deduction (standard rate)', '=F$_totalRow'],
+    ['Net after expenses and mileage', '=B$_totalRow-C$_totalRow-F$_totalRow'],
+    [],
+    ['Expenses by category', 'Amount'],
+    for (final c in _expenseCategories)
+      [c, '=SUMIFS($exp!\$E:\$E,$exp!\$C:\$C,"$c",${year(exp)})'],
+    [],
+    ['Income by source', 'Amount'],
+    for (final s in _incomeSources)
+      [
+        s,
+        '=SUMIFS($pay!\$F:\$F,$pay!\$D:\$D,"${s.replaceAll('"', '""')}",'
+            '${year(pay)})',
+      ],
+    [],
+    [
+      'IRS standard mileage rate (\$ per mile). Add a row each year from '
+          'irs.gov.',
+    ],
+    ['Year', 'January–June', 'July–December'],
+    [2025, 0.70, 0.70],
+    [2026, 0.725, 0.76],
+  ];
+}
+
+/// The tax summary's look. Clears the old Summary's formats first.
+List<sheets.Request> taxSummaryFormatRequests() {
+  const id = _summarySheetId;
+  return [
+    sheets.Request(
+      repeatCell: sheets.RepeatCellRequest(
+        range: _range(id, startRow: 0, endRow: 80, startCol: 0, endCol: 8),
+        cell: sheets.CellData(userEnteredFormat: sheets.CellFormat()),
+        fields: 'userEnteredFormat',
+      ),
+    ),
+    _bold(id, row: 0, fontSize: 14),
+    _bold(id, row: 4, background: _green, foreground: _white),
+    _bold(id, row: _totalRow - 1),
+    _bold(id, row: _totalRow + 1, fontSize: 12),
+    _bold(id, row: _categoryRow - 2, background: _green, foreground: _white),
+    _bold(id, row: _sourceRow - 2, background: _green, foreground: _white),
+    _bold(id, row: _ratesRow - 2),
+    _bold(id, row: _ratesRow - 1, background: _green, foreground: _white),
+    _numberFormat(
+      id,
+      0,
+      'DATE',
+      'mmmm',
+      startRow: _monthsRow - 1,
+      endRow: _totalRow - 1,
+    ),
+    for (final col in [1, 2, 3, 5])
+      _numberFormat(
+        id,
+        col,
+        'CURRENCY',
+        r'"$"#,##0.00',
+        startRow: _monthsRow - 1,
+        endRow: _totalRow,
+      ),
+    _numberFormat(
+      id,
+      4,
+      'NUMBER',
+      '#,##0.0',
+      startRow: _monthsRow - 1,
+      endRow: _totalRow,
+    ),
+    _numberFormat(
+      id,
+      1,
+      'CURRENCY',
+      r'"$"#,##0.00',
+      startRow: _totalRow + 1,
+      endRow: _sourceRow + _incomeSources.length,
+    ),
+    _numberFormat(
+      id,
+      1,
+      'NUMBER',
+      r'$0.000',
+      startRow: _ratesRow,
+      endRow: _ratesRow + 11,
+    ),
+    _numberFormat(
+      id,
+      2,
+      'NUMBER',
+      r'$0.000',
+      startRow: _ratesRow,
+      endRow: _ratesRow + 11,
+    ),
+    _width(id, 0, 260),
+    for (final col in [1, 2, 3, 4, 5]) _width(id, col, 150),
   ];
 }

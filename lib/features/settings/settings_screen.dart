@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../services/jobs.dart';
 import '../../state/providers.dart';
 import '../../widgets/page_body.dart';
+import '../policy_docs/signed_docs_page.dart';
 import '../log_trip/log_trip_screen.dart';
 import '../../widgets/place_dialog.dart';
 
@@ -67,6 +68,14 @@ class SettingsScreen extends ConsumerWidget {
           ],
           section('Google account'),
           const _GoogleAccountSection(),
+          if (ref.watch(settingsProvider).spreadsheetId != null) ...[
+            section('Business records'),
+            const _RecordsSection(),
+          ],
+          if (ref.watch(googleAccountServiceProvider) != null) ...[
+            section('Policy docs'),
+            const PolicyDocsSettings(),
+          ],
           section('Starting point'),
           ListTile(
             leading: home == null || home.isVerified
@@ -263,8 +272,9 @@ class _GoogleAccountSection extends ConsumerWidget {
               leading: const Icon(Icons.account_circle_outlined),
               title: const Text('Sign in with Google'),
               subtitle: const Text(
-                'Keeps your clients, settings and API key the same on your '
-                'phone and Mac, and uploads trips to your spreadsheet.',
+                'Keeps your clients, payments and settings the same on your '
+                'phone and Mac, and keeps your business records spreadsheet '
+                'up to date.',
               ),
               trailing: FilledButton(
                 onPressed: notifier.signIn,
@@ -323,7 +333,7 @@ class _GoogleAccountSection extends ConsumerWidget {
                   if (spreadsheetId != null)
                     TextButton.icon(
                       icon: const Icon(Icons.table_chart_outlined),
-                      label: const Text('Open spreadsheet'),
+                      label: const Text('Open business records'),
                       onPressed: () => launchUrl(
                         Uri.parse(
                           'https://docs.google.com/spreadsheets/d/$spreadsheetId',
@@ -407,6 +417,33 @@ class _ApiKeyDialogState extends State<_ApiKeyDialog> {
         ),
         FilledButton(onPressed: _save, child: const Text('Save')),
       ],
+    );
+  }
+}
+
+/// What's in the business records spreadsheet, and a way to open it.
+class _RecordsSection extends ConsumerWidget {
+  const _RecordsSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final id = ref.watch(settingsProvider).spreadsheetId!;
+    return ListTile(
+      leading: const Icon(Icons.table_chart_outlined),
+      title: const Text('Dunn Record Keeping - Business Records'),
+      subtitle: const Text(
+        'A Google Sheet for taxes, kept up to date by the app: Mileage Log, '
+        'Sessions, Payments (sessions, Dunn Club and other income), '
+        'Expenses, and a Summary with income, expenses and the mileage '
+        'deduction by month and category.',
+      ),
+      isThreeLine: true,
+      trailing: IconButton(
+        tooltip: 'Open the spreadsheet',
+        icon: const Icon(Icons.open_in_new),
+        onPressed: () =>
+            launchUrl(Uri.parse('https://docs.google.com/spreadsheets/d/$id')),
+      ),
     );
   }
 }

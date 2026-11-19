@@ -5,9 +5,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'background/job_watcher.dart';
+import 'features/calendar/calendar_screen.dart';
 import 'features/clients/clients_screen.dart';
+import 'features/leads/leads_screen.dart';
+import 'features/payments/payments_screen.dart';
 import 'features/settings/settings_screen.dart';
-import 'services/availability_link.dart';
+import 'state/leads_provider.dart';
+import 'state/money_provider.dart';
 import 'state/providers.dart';
 
 class MileageApp extends StatelessWidget {
@@ -82,23 +86,19 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     super.dispose();
   }
 
-  static const _pages = [ClientsScreen(), SettingsScreen()];
-
-  /// The bottom menu: Clients, Availability (a link to Google Calendar,
-  /// not a page), Settings.
-  static const _availability = 1;
-  int get _selected => _index == 0 ? 0 : 2;
+  static const _pages = [
+    ClientsScreen(),
+    LeadsScreen(),
+    CalendarScreen(),
+    PaymentsScreen(),
+    SettingsScreen(),
+  ];
 
   /// Each tab has its own page stack, so the bottom bar stays on screen
   /// when a client page (or the Mileage Log) opens.
   final _tabs = [for (final _ in _pages) GlobalKey<NavigatorState>()];
 
-  void _select(int destination) {
-    if (destination == _availability) {
-      openAvailabilityEditor();
-      return;
-    }
-    final i = destination == 0 ? 0 : 1;
+  void _select(int i) {
     if (i == _index) {
       // Tapping the open tab goes back to its first page.
       _tabs[i].currentState?.popUntil((r) => r.isFirst);
@@ -122,6 +122,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
+    final newLeads = ref.watch(openLeadsProvider).length;
+    final toConfirm = ref.watch(clubToConfirmProvider).length;
     return Scaffold(
       body: PopScope(
         canPop: false,
@@ -143,20 +145,46 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         ),
       ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _selected,
+        selectedIndex: _index,
         onDestinationSelected: _select,
-        destinations: const [
-          NavigationDestination(
+        destinations: [
+          const NavigationDestination(
             icon: Icon(Icons.people_outline),
             selectedIcon: Icon(Icons.people),
             label: 'Clients',
           ),
           NavigationDestination(
-            icon: Icon(Icons.edit_calendar_outlined),
-            label: 'Availability',
-            tooltip: 'Edit availability in Google Calendar',
+            icon: Badge(
+              isLabelVisible: newLeads > 0,
+              label: Text('$newLeads'),
+              child: const Icon(Icons.mark_email_unread_outlined),
+            ),
+            selectedIcon: Badge(
+              isLabelVisible: newLeads > 0,
+              label: Text('$newLeads'),
+              child: const Icon(Icons.mark_email_unread),
+            ),
+            label: 'Leads',
+          ),
+          const NavigationDestination(
+            icon: Icon(Icons.calendar_month_outlined),
+            selectedIcon: Icon(Icons.calendar_month),
+            label: 'Calendar',
           ),
           NavigationDestination(
+            icon: Badge(
+              isLabelVisible: toConfirm > 0,
+              label: Text('$toConfirm'),
+              child: const Icon(Icons.payments_outlined),
+            ),
+            selectedIcon: Badge(
+              isLabelVisible: toConfirm > 0,
+              label: Text('$toConfirm'),
+              child: const Icon(Icons.payments),
+            ),
+            label: 'Payments',
+          ),
+          const NavigationDestination(
             icon: Icon(Icons.settings_outlined),
             selectedIcon: Icon(Icons.settings),
             label: 'Settings',
