@@ -329,4 +329,160 @@ void main() {
       expect(fees.last.amount, 2.48, reason: 'Stripe keeps fees on refunds');
     });
   });
+
+  group('payment links', () {
+    test('made with the amount, one payment, and the session tag', () async {
+      late http.Request sent;
+      final api = StripeApi(
+        'rk_test_w',
+        client: MockClient((req) async {
+          sent = req;
+          return http.Response(
+            jsonEncode({
+              'id': 'plink_9',
+              'url': 'https://buy.stripe.com/test_9',
+              'active': true,
+            }),
+            200,
+          );
+        }),
+      );
+      final link = await api.createPaymentLink(
+        amount: 262.5,
+        name: 'Organizing session · 11/20/26 · 2.5 hours',
+        clientId: 'client-1',
+        sessionKey: 'booking-7',
+      );
+      expect(link.id, 'plink_9');
+      expect(link.url, 'https://buy.stripe.com/test_9');
+      expect(sent.method, 'POST');
+      expect(sent.url.path, '/v1/payment_links');
+      expect(sent.headers['Authorization'], 'Bearer rk_test_w');
+      final form = Uri.splitQueryString(sent.body);
+      expect(form['line_items[0][price_data][currency]'], 'usd');
+      expect(form['line_items[0][price_data][unit_amount]'], '26250');
+      expect(
+        form['line_items[0][price_data][product_data][name]'],
+        'Organizing session · 11/20/26 · 2.5 hours',
+      );
+      expect(form['line_items[0][quantity]'], '1');
+      expect(form['restrictions[completed_sessions][limit]'], '1');
+      expect(form['metadata[dunn_client_id]'], 'client-1');
+      expect(form['metadata[dunn_session_key]'], 'booking-7');
+    });
+
+    test('turned off with active=false', () async {
+      late http.Request sent;
+      final api = StripeApi(
+        'rk_test_w',
+        client: MockClient((req) async {
+          sent = req;
+          return http.Response(jsonEncode({'id': 'plink_9'}), 200);
+        }),
+      );
+      await api.deactivatePaymentLink('plink_9');
+      expect(sent.url.path, '/v1/payment_links/plink_9');
+      expect(Uri.splitQueryString(sent.body), {'active': 'false'});
+    });
+
+    test('payments through them carry the client and session', () {
+      final p = paymentFromCheckout({
+        ...checkout(),
+        'metadata': {
+          'dunn_client_id': 'client-1',
+          'dunn_session_key': 'booking-7',
+        },
+      })!;
+      expect(p.clientId, 'client-1');
+      expect(p.sessionKey, 'booking-7');
+      expect(StripePayment.fromJson(p.toJson()).sessionKey, 'booking-7');
+      expect(paymentFromCheckout(checkout())!.clientId, isNull);
+    });
+
+    test('the session for a payment: by tag, else by the saved link', () {
+      final s1 = ClientJobEntry(
+        state: ClientJobState.upcoming,
+        start: DateTime(2026, 11, 20, 9),
+        scheduled: ScheduledJob(id: 's1', start: DateTime(2026, 11, 20, 9)),
+      );
+      final s2 = ClientJobEntry(
+        state: ClientJobState.upcoming,
+        start: DateTime(2026, 11, 27, 9),
+        scheduled: ScheduledJob(id: 's2', start: DateTime(2026, 11, 27, 9)),
+      );
+      final c = SavedAddress(
+        id: 'c',
+        name: 'Jane',
+        address: 'a',
+        billing: {
+          's2': SessionBilling(
+            status: BillingStatus.billed,
+            link: SessionPaymentLink(
+              id: 'plink_2',
+              url: 'u',
+              amount: 300,
+              createdOn: DateTime(2026, 11, 19),
+            ),
+          ),
+        },
+      );
+      List<ClientJobEntry> sessions(SavedAddress _) => [s1, s2];
+      StripePayment pay({String? client, String? key, String? link}) =>
+          StripePayment(
+            id: 'cs',
+            at: DateTime(2026, 11, 19),
+            amount: 300,
+            clientId: client,
+            sessionKey: key,
+            paymentLink: link,
+          );
+      expect(
+        linkedSession(pay(client: 'c', key: 's1'), [c], sessions)?.session,
+        s1,
+      );
+      expect(linkedSession(pay(link: 'plink_2'), [c], sessions)?.session, s2);
+      expect(linkedSession(pay(link: 'plink_x'), [c], sessions), isNull);
+      expect(
+        linkedSession(pay(client: 'c', key: 'gone'), [c], sessions),
+        isNull,
+      );
+    });
+
+    test('saved on the session until paid', () {
+      final link = SessionPaymentLink(
+        id: 'plink_1',
+        url: 'https://buy.stripe.com/x',
+        amount: 300,
+        createdOn: DateTime(2026, 11, 19),
+      );
+      final billed = SessionBilling(status: BillingStatus.billed, link: link);
+      expect(SessionBilling.fromJson(billed.toJson()), billed);
+      expect(
+        SessionBilling(status: BillingStatus.paid, link: link).toJson(),
+        isNot(contains('link')),
+      );
+      expect(billed.withoutLink().link, isNull);
+    });
+
+    test('name and pre-filled email', () {
+      final s = ClientJobEntry(
+        state: ClientJobState.upcoming,
+        start: DateTime(2026, 11, 20, 9),
+        scheduled: ScheduledJob(
+          id: 's',
+          start: DateTime(2026, 11, 20, 9),
+          end: DateTime(2026, 11, 20, 10),
+        ),
+      );
+      expect(paymentLinkName(s), 'Organizing session · 11/20/26 · 1 hour');
+      expect(
+        withPrefilledEmail('https://buy.stripe.com/x', 'a+b@example.com'),
+        'https://buy.stripe.com/x?prefilled_email=a%2Bb%40example.com',
+      );
+      expect(
+        withPrefilledEmail('https://buy.stripe.com/x', ''),
+        'https://buy.stripe.com/x',
+      );
+    });
+  });
 }

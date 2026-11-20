@@ -521,13 +521,15 @@ class _ConnectStripeDialogState extends ConsumerState<_ConnectStripeDialog> {
                 '2. Choose "Create restricted key", and name it "Dunn '
                 'Record Keeping".\n'
                 '3. Set these to Read: Checkout Sessions, PaymentIntents, '
-                'Charges, and Balance. Leave everything else at None.\n'
+                'Charges, and Balance. To make payment links from the app, '
+                'set Payment Links, Products and Prices to Write. Leave '
+                'everything else at None.\n'
                 '4. Create it, copy the key (it starts with rk_live_), and '
                 'paste it below.\n\n'
-                'A restricted key like this can only look at payments. It '
-                'can\'t charge, refund or move money. It\'s kept in this '
-                'device\'s keychain and shared with your other device '
-                'through your Google account.',
+                'A restricted key like this can look at payments and make '
+                'payment links, but it can\'t charge, refund or move money. '
+                'It\'s kept in this device\'s keychain and shared with your '
+                'other device through your Google account.',
               ),
               const SizedBox(height: 12),
               Text(

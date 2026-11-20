@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/billing.dart';
 import '../services/client_jobs.dart';
 import '../services/people_match.dart';
 import '../services/stripe.dart';
@@ -222,6 +223,12 @@ class StripeNotifier extends Notifier<StripeState> {
         );
         continue;
       }
+      // Paid through a link the app made: exactly its session.
+      final fromLink = linkedSession(p, clients, (c) => sessionsOf(c.id));
+      if (fromLink != null) {
+        await link(p, fromLink.client.id, fromLink.session, automatic: true);
+        continue;
+      }
       final who = matchPerson(email: p.email, name: p.name, clients: clients);
       if (who == null) continue;
       final session = pickSession(p, who.client, sessionsOf(who.client.id));
@@ -256,6 +263,97 @@ class StripeNotifier extends Notifier<StripeState> {
         automatic: automatic,
       ),
     );
+  }
+
+  /// Makes a one-time payment link for [amount] dollars for [session] of
+  /// [clientId]'s, and saves it on the session (now "Billed"). Returns
+  /// what went wrong, or null.
+  Future<String?> createLink(
+    String clientId,
+    ClientJobEntry session, {
+    required double amount,
+    required String name,
+  }) async {
+    final key = ref.read(stripeKeyProvider);
+    if (key == null) return 'Connect Stripe in Settings first.';
+    if (amount < 0.5) return 'Stripe needs at least \$0.50.';
+    final ({String id, String url}) made;
+    try {
+      made = await ref
+          .read(stripeSourceFactoryProvider)(key)
+          .createPaymentLink(
+            amount: amount,
+            name: name,
+            clientId: clientId,
+            sessionKey: session.billingKeys.first,
+          );
+    } on StripeException catch (e) {
+      return e.badKey
+          ? '${e.message}\n\nThe Stripe key needs Write access to Payment '
+                'Links (and Products and Prices) to make links. In Stripe, '
+                'edit the restricted key (or make a new one), then use '
+                'Settings → Stripe → Change key.'
+          : e.message;
+    }
+    final client = ref
+        .read(addressesProvider)
+        .where((c) => c.id == clientId)
+        .firstOrNull;
+    if (client == null) return null;
+    final now = ref.read(clockProvider)();
+    await ref
+        .read(addressesProvider.notifier)
+        .replace(
+          withBilling(
+            client,
+            session,
+            SessionBilling(
+              status: BillingStatus.billed,
+              link: SessionPaymentLink(
+                id: made.id,
+                url: made.url,
+                amount: amount,
+                createdOn: DateTime(now.year, now.month, now.day),
+              ),
+            ),
+          ),
+        );
+    return null;
+  }
+
+  /// Turns off [session]'s payment link so it can't be paid, and removes
+  /// it from the session (back to "Need to bill"). Returns what went
+  /// wrong, or null.
+  Future<String?> turnOffLink(String clientId, ClientJobEntry session) async {
+    final client = ref
+        .read(addressesProvider)
+        .where((c) => c.id == clientId)
+        .firstOrNull;
+    if (client == null) return null;
+    final billing = billingFor(client, session);
+    final link = billing.link;
+    if (link == null) return null;
+    final key = ref.read(stripeKeyProvider);
+    if (key == null) return 'Connect Stripe in Settings first.';
+    try {
+      await ref
+          .read(stripeSourceFactoryProvider)(key)
+          .deactivatePaymentLink(link.id);
+    } on StripeException catch (e) {
+      return e.message;
+    }
+    await ref
+        .read(addressesProvider.notifier)
+        .replace(
+          withBilling(
+            client,
+            session,
+            billing.status == BillingStatus.billed
+                ? SessionBilling.unbilled
+                : billing.withoutLink(),
+          ),
+        );
+    return null;
   }
 
   /// [payment] isn't for a session (other income, from [clientId] if

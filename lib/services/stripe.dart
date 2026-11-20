@@ -19,6 +19,8 @@ class StripePayment {
     this.name = '',
     this.method = PaymentMethod.stripeCard,
     this.paymentLink,
+    this.clientId,
+    this.sessionKey,
   });
 
   /// The Checkout Session's ID ("cs_…").
@@ -44,6 +46,11 @@ class StripePayment {
   /// The payment link they paid through ("plink_…"), if any.
   final String? paymentLink;
 
+  /// The client and session it's for, when paid through a link the app
+  /// made (Stripe copies them from the link).
+  final String? clientId;
+  final String? sessionKey;
+
   /// What was kept: the amount less refunds.
   double get net => ((amount - refunded) * 100).round() / 100;
 
@@ -62,6 +69,8 @@ class StripePayment {
     if (name.isNotEmpty) 'name': name,
     'method': method.name,
     if (paymentLink != null) 'paymentLink': paymentLink,
+    if (clientId != null) 'clientId': clientId,
+    if (sessionKey != null) 'sessionKey': sessionKey,
   };
 
   factory StripePayment.fromJson(Map<String, dynamic> json) => StripePayment(
@@ -78,6 +87,8 @@ class StripePayment {
             .firstOrNull ??
         PaymentMethod.stripeCard,
     paymentLink: json['paymentLink'] as String?,
+    clientId: json['clientId'] as String?,
+    sessionKey: json['sessionKey'] as String?,
   );
 }
 
@@ -109,6 +120,12 @@ StripePayment? paymentFromCheckout(Map<String, dynamic> s) {
   final balance = chargeMap?['balance_transaction'];
   final details = chargeMap?['payment_method_details'] as Map<String, dynamic>?;
   final link = s['payment_link'];
+  final meta = s['metadata'] is Map ? s['metadata'] as Map : const {};
+  String? tag(String k) {
+    final v = meta[k];
+    return v is String && v.isNotEmpty ? v : null;
+  }
+
   return StripePayment(
     id: s['id'] as String,
     at: DateTime.fromMillisecondsSinceEpoch(
@@ -122,8 +139,14 @@ StripePayment? paymentFromCheckout(Map<String, dynamic> s) {
     name: ((customer['name'] as String?) ?? '').trim(),
     method: stripeMethod(details?['type'] as String?),
     paymentLink: link is String ? link : (link as Map?)?['id'] as String?,
+    clientId: tag(linkClientKey),
+    sessionKey: tag(linkSessionKey),
   );
 }
+
+/// Metadata keys on payment links the app makes.
+const linkClientKey = 'dunn_client_id';
+const linkSessionKey = 'dunn_session_key';
 
 class StripeException implements Exception {
   const StripeException(this.message, {this.badKey = false});
@@ -136,10 +159,22 @@ class StripeException implements Exception {
   String toString() => message;
 }
 
-/// Reads payments from Stripe.
+/// Reads payments from Stripe, and makes payment links.
 abstract class StripeSource {
   /// Paid checkouts created on or after [since], newest first.
   Future<List<StripePayment>> paymentsSince(DateTime since);
+
+  /// A payment link for [amount] dollars, named [name], that can be paid
+  /// once, tagged with [clientId] and [sessionKey].
+  Future<({String id, String url})> createPaymentLink({
+    required double amount,
+    required String name,
+    required String clientId,
+    required String sessionKey,
+  });
+
+  /// Turns the link off, so it can't be paid.
+  Future<void> deactivatePaymentLink(String id);
 }
 
 /// Stripe's API, with a restricted (read-only) key.
@@ -150,42 +185,91 @@ class StripeApi implements StripeSource {
   final String _key;
   final http.Client _client;
 
+  /// GET (no [form]) or POST (with [form]) to [path]; the reply's JSON.
+  Future<Map<String, dynamic>> _call(
+    String path, {
+    Map<String, String>? query,
+    Map<String, String>? form,
+  }) async {
+    final uri = Uri.https('api.stripe.com', path, query);
+    final headers = {'Authorization': 'Bearer $_key'};
+    final http.Response res;
+    try {
+      res = form == null
+          ? await _client.get(uri, headers: headers)
+          : await _client.post(uri, headers: headers, body: form);
+    } catch (e) {
+      throw StripeException('Couldn\'t reach Stripe: $e');
+    }
+    final body = _json(res.body);
+    if (res.statusCode != 200) {
+      final error = body?['error'];
+      final message = error is Map ? error['message'] as String? : null;
+      throw StripeException(
+        message ?? 'Stripe answered ${res.statusCode}.',
+        badKey: res.statusCode == 401 || res.statusCode == 403,
+      );
+    }
+    return body ?? const {};
+  }
+
+  @override
+  Future<({String id, String url})> createPaymentLink({
+    required double amount,
+    required String name,
+    required String clientId,
+    required String sessionKey,
+  }) async {
+    final body = await _call(
+      '/v1/payment_links',
+      form: {
+        'line_items[0][price_data][currency]': 'usd',
+        'line_items[0][price_data][unit_amount]': '${(amount * 100).round()}',
+        'line_items[0][price_data][product_data][name]': name,
+        'line_items[0][quantity]': '1',
+        // Paid once, then Stripe turns it off.
+        'restrictions[completed_sessions][limit]': '1',
+        'inactive_message':
+            'This payment link has already been paid or is no longer '
+            'active. Please get in touch if you need a new one.',
+        'metadata[$linkClientKey]': clientId,
+        'metadata[$linkSessionKey]': sessionKey,
+      },
+    );
+    final id = body['id'];
+    final url = body['url'];
+    if (id is! String || url is! String) {
+      throw const StripeException('Stripe didn\'t return a link.');
+    }
+    return (id: id, url: url);
+  }
+
+  @override
+  Future<void> deactivatePaymentLink(String id) async {
+    await _call('/v1/payment_links/$id', form: {'active': 'false'});
+  }
+
   @override
   Future<List<StripePayment>> paymentsSince(DateTime since) async {
     final out = <StripePayment>[];
     String? after;
     for (var page = 0; page < 50; page++) {
-      final uri = Uri.https('api.stripe.com', '/v1/checkout/sessions', {
-        'limit': '100',
-        'status': 'complete',
-        'created[gte]': '${since.toUtc().millisecondsSinceEpoch ~/ 1000}',
-        'expand[]': 'data.payment_intent.latest_charge.balance_transaction',
-        'starting_after': ?after,
-      });
-      final http.Response res;
-      try {
-        res = await _client.get(
-          uri,
-          headers: {'Authorization': 'Bearer $_key'},
-        );
-      } catch (e) {
-        throw StripeException('Couldn\'t reach Stripe: $e');
-      }
-      final body = _json(res.body);
-      if (res.statusCode != 200) {
-        final error = body?['error'];
-        final message = error is Map ? error['message'] as String? : null;
-        throw StripeException(
-          message ?? 'Stripe answered ${res.statusCode}.',
-          badKey: res.statusCode == 401 || res.statusCode == 403,
-        );
-      }
-      final data = (body?['data'] as List?) ?? const [];
+      final body = await _call(
+        '/v1/checkout/sessions',
+        query: {
+          'limit': '100',
+          'status': 'complete',
+          'created[gte]': '${since.toUtc().millisecondsSinceEpoch ~/ 1000}',
+          'expand[]': 'data.payment_intent.latest_charge.balance_transaction',
+          'starting_after': ?after,
+        },
+      );
+      final data = (body['data'] as List?) ?? const [];
       for (final s in data) {
         final p = paymentFromCheckout(s as Map<String, dynamic>);
         if (p != null) out.add(p);
       }
-      if (body?['has_more'] != true || data.isEmpty) break;
+      if (body['has_more'] != true || data.isEmpty) break;
       after = (data.last as Map<String, dynamic>)['id'] as String;
     }
     return out;
@@ -238,6 +322,56 @@ class StripeDecision {
 }
 
 bool _sameMoney(double? a, double b) => a != null && (a - b).abs() < 0.005;
+
+/// The session a payment made through one of the app's links is for:
+/// by the link's tag, else by the link saved on the session. Null if it
+/// wasn't one of the app's links (or the session is gone).
+({SavedAddress client, ClientJobEntry session})? linkedSession(
+  StripePayment payment,
+  List<SavedAddress> clients,
+  List<ClientJobEntry> Function(SavedAddress client) sessionsOf,
+) {
+  for (final c in clients) {
+    final tagged = payment.clientId == c.id && payment.sessionKey != null;
+    final hasLink =
+        payment.paymentLink != null &&
+        c.billing.values.any((b) => b.link?.id == payment.paymentLink);
+    if (!tagged && !hasLink) continue;
+    for (final s in sessionsOf(c)) {
+      final keys = s.billingKeys;
+      if ((tagged && keys.contains(payment.sessionKey)) ||
+          (hasLink && billingFor(c, s).link?.id == payment.paymentLink)) {
+        return (client: c, session: s);
+      }
+    }
+  }
+  return null;
+}
+
+/// What a session bills, as a payment link's name: "Organizing session ·
+/// 11/20/26 · 3 hours".
+String paymentLinkName(ClientJobEntry s) {
+  final d = s.scheduled?.start ?? s.start;
+  final date = '${d.month}/${d.day}/${d.year % 100}';
+  final t = s.scheduled?.duration ?? s.time;
+  if (t == null) return 'Organizing session · $date';
+  final h = t.inMinutes / 60;
+  final hours = h == h.roundToDouble()
+      ? h.toStringAsFixed(0)
+      : h.toStringAsFixed(1);
+  return 'Organizing session · $date · $hours ${h == 1 ? 'hour' : 'hours'}';
+}
+
+/// [url] with [email] filled in at checkout (they can still change it).
+String withPrefilledEmail(String url, String email) {
+  if (email.isEmpty) return url;
+  final uri = Uri.parse(url);
+  return uri
+      .replace(
+        queryParameters: {...uri.queryParameters, 'prefilled_email': email},
+      )
+      .toString();
+}
 
 /// The session [payment] most likely paid for, among [client]'s
 /// [sessions], or null if it isn't clear. Sessions linked to another

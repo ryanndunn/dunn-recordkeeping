@@ -12,6 +12,7 @@ import 'package:mileage_log/state/leads_provider.dart';
 import 'package:mileage_log/models/money.dart';
 import 'package:mileage_log/state/money_provider.dart';
 import 'package:mileage_log/state/policy_forms_provider.dart';
+import 'package:mileage_log/services/client_jobs.dart';
 import 'package:mileage_log/services/stripe.dart';
 import 'package:mileage_log/state/stripe_provider.dart';
 import 'package:mileage_log/models/place.dart';
@@ -449,6 +450,77 @@ class FakeStripe implements StripeSource {
       for (final p in payments)
         if (!p.at.isBefore(since)) p,
     ];
+  }
+
+  /// Links made, by ID; false once turned off.
+  final links =
+      <
+        String,
+        ({
+          double amount,
+          String name,
+          String clientId,
+          String sessionKey,
+          bool active,
+        })
+      >{};
+
+  /// A key that can read but not make links.
+  String? readOnlyKey;
+
+  @override
+  Future<({String id, String url})> createPaymentLink({
+    required double amount,
+    required String name,
+    required String clientId,
+    required String sessionKey,
+  }) async {
+    if (keysUsed.isNotEmpty && keysUsed.last == readOnlyKey) {
+      throw const StripeException(
+        'The provided key does not have the required permissions for this '
+        'endpoint.',
+        badKey: true,
+      );
+    }
+    final id = 'plink_${links.length + 1}';
+    links[id] = (
+      amount: amount,
+      name: name,
+      clientId: clientId,
+      sessionKey: sessionKey,
+      active: true,
+    );
+    return (id: id, url: 'https://buy.stripe.com/test_$id');
+  }
+
+  @override
+  Future<void> deactivatePaymentLink(String id) async {
+    final l = links[id]!;
+    links[id] = (
+      amount: l.amount,
+      name: l.name,
+      clientId: l.clientId,
+      sessionKey: l.sessionKey,
+      active: false,
+    );
+  }
+
+  /// Someone pays link [id] on [at], as Stripe reports it.
+  void pay(String id, DateTime at, {String email = '', String name = ''}) {
+    final l = links[id]!;
+    payments.add(
+      StripePayment(
+        id: 'cs_$id',
+        at: at,
+        amount: l.amount,
+        fee: (l.amount * 0.03 * 100).round() / 100,
+        email: email,
+        name: name,
+        paymentLink: id,
+        clientId: l.clientId,
+        sessionKey: l.sessionKey,
+      ),
+    );
   }
 }
 
@@ -1669,6 +1741,126 @@ void main() {
       expect(phone.read(stripeProvider).payments, isEmpty);
       // Sessions stay paid, now counted as session payments.
       expect(ids(phone), contains('session:${jane.id}:j1'));
+    });
+  });
+
+  group('Stripe payment links', () {
+    const clinic = Place(label: 'Clinic', address: '2 Main St', placeId: 'c');
+
+    test('a link per session: made, sent, paid, matched exactly', () async {
+      var t = DateTime(2026, 11, 19, 9);
+      DateTime clock() => t;
+      final remote = FakeRemote();
+      final stripe = FakeStripe()..readOnlyKey = 'rk_test_read';
+      final mac = await device(remote, clock: clock, stripe: stripe);
+      final phone = await device(remote, clock: clock, stripe: stripe);
+      await mac.read(syncProvider.notifier).signIn();
+      await phone.read(syncProvider.notifier).signIn();
+
+      // Two $300 sessions: by amount alone, a payment couldn't be placed.
+      final clients = mac.read(addressesProvider.notifier);
+      ScheduledJob booking(String id, int day) => ScheduledJob(
+        id: id,
+        start: DateTime(2026, 11, day, 9),
+        end: DateTime(2026, 11, day, 12),
+      );
+      final added = await clients.add(name: 'Bob Jones', place: clinic);
+      await clients.replace(
+        added.copyWith(
+          hourlyRate: 100,
+          scheduled: [booking('b1', 21), booking('b2', 28)],
+        ),
+      );
+      SavedAddress bob(ProviderContainer d) =>
+          d.read(addressesProvider).firstWhere((c) => c.id == added.id);
+      final notifier = mac.read(stripeProvider.notifier);
+      ClientJobEntry session(String id) => notifier
+          .sessionsOf(added.id)
+          .firstWhere((s) => s.scheduled?.id == id);
+
+      // A read-only key can't make links, and says what to change.
+      expect(await notifier.connect('rk_test_read'), isNull);
+      final refused = await notifier.createLink(
+        added.id,
+        session('b2'),
+        amount: 300,
+        name: 'Organizing session',
+      );
+      expect(refused, contains('Write access to Payment Links'));
+      expect(bob(mac).billing, isEmpty);
+
+      // With write access: a link for the second session.
+      expect(await notifier.connect('rk_test_write'), isNull);
+      expect(
+        await notifier.createLink(
+          added.id,
+          session('b2'),
+          amount: 300,
+          name: paymentLinkName(session('b2')),
+        ),
+        isNull,
+      );
+      final made = stripe.links['plink_1']!;
+      expect(made.amount, 300);
+      expect(made.name, 'Organizing session · 11/28/26 · 3 hours');
+      expect(made.clientId, added.id);
+      expect(made.sessionKey, 'b2');
+      final b2 = bob(mac).billing['b2']!;
+      expect(b2.status, BillingStatus.billed);
+      expect(b2.link!.url, 'https://buy.stripe.com/test_plink_1');
+      expect(b2.link!.createdOn, DateTime(2026, 11, 19));
+
+      // The phone sees the link on the session too.
+      t = t.add(const Duration(minutes: 1));
+      await mac.read(syncProvider.notifier).syncNow();
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(bob(phone).billing['b2']!.link!.id, 'plink_1');
+
+      // Paid by someone the app doesn't know: still exactly session b2.
+      stripe.pay('plink_1', DateTime(2026, 11, 20, 18), email: 'x@y.com');
+      t = t.add(StripeNotifier.refreshEvery);
+      await phone.read(syncProvider.notifier).syncNow();
+      final paid = bob(phone).billing['b2']!;
+      expect(paid.status, BillingStatus.paid);
+      expect(paid.stripeId, 'cs_plink_1');
+      expect(paid.link, isNull);
+      expect(bob(phone).billing.containsKey('b1'), isFalse);
+      expect(phone.read(unmatchedStripeProvider), isEmpty);
+    });
+
+    test('turning a link off; then making a new one', () async {
+      final stripe = FakeStripe();
+      final mac = await device(
+        FakeRemote(),
+        clock: () => DateTime(2026, 11, 19, 9),
+        stripe: stripe,
+      );
+      await mac.read(syncProvider.notifier).signIn();
+      final clients = mac.read(addressesProvider.notifier);
+      final added = await clients.add(name: 'Ann Lee', place: clinic);
+      await clients.replace(
+        added.copyWith(
+          scheduled: [
+            ScheduledJob(
+              id: 'a1',
+              start: DateTime(2026, 11, 22, 9),
+              end: DateTime(2026, 11, 22, 11),
+            ),
+          ],
+        ),
+      );
+      final notifier = mac.read(stripeProvider.notifier);
+      expect(await notifier.connect('rk_test_write'), isNull);
+      ClientJobEntry a1() => notifier.sessionsOf(added.id).single;
+      await notifier.createLink(added.id, a1(), amount: 150, name: 'x');
+      expect(await notifier.turnOffLink(added.id, a1()), isNull);
+      expect(stripe.links['plink_1']!.active, isFalse);
+      SavedAddress ann() =>
+          mac.read(addressesProvider).firstWhere((c) => c.id == added.id);
+      expect(ann().billing['a1'], SessionBilling.unbilled);
+      await notifier.createLink(added.id, a1(), amount: 175, name: 'x');
+      expect(ann().billing['a1']!.link!.id, 'plink_2');
+      expect(ann().billing['a1']!.link!.amount, 175);
     });
   });
 }

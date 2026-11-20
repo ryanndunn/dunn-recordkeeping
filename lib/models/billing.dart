@@ -33,6 +33,7 @@ class SessionBilling {
     this.paidOn,
     this.amount,
     this.stripeId,
+    this.link,
   });
 
   /// A session nothing has been recorded for.
@@ -52,6 +53,18 @@ class SessionBilling {
   /// matched from Stripe. Only while paid.
   final String? stripeId;
 
+  /// The Stripe payment link sent for it, until it's paid.
+  final SessionPaymentLink? link;
+
+  /// The same, without the payment link (e.g. once it's turned off).
+  SessionBilling withoutLink() => SessionBilling(
+    status: status,
+    method: method,
+    paidOn: paidOn,
+    amount: amount,
+    stripeId: stripeId,
+  );
+
   Map<String, dynamic> toJson() => {
     'status': status.name,
     if (status == BillingStatus.paid) ...{
@@ -60,6 +73,7 @@ class SessionBilling {
       if (amount != null) 'amount': amount,
       if (stripeId != null) 'stripeId': stripeId,
     },
+    if (status != BillingStatus.paid && link != null) 'link': link!.toJson(),
   };
 
   factory SessionBilling.fromJson(Map<String, dynamic> json) => SessionBilling(
@@ -76,6 +90,9 @@ class SessionBilling {
         : DateTime.parse(json['paidOn'] as String),
     amount: (json['amount'] as num?)?.toDouble(),
     stripeId: json['stripeId'] as String?,
+    link: json['link'] is Map<String, dynamic>
+        ? SessionPaymentLink.fromJson(json['link'] as Map<String, dynamic>)
+        : null,
   );
 
   @override
@@ -85,10 +102,56 @@ class SessionBilling {
       other.method == method &&
       other.paidOn == paidOn &&
       other.amount == amount &&
-      other.stripeId == stripeId;
+      other.stripeId == stripeId &&
+      other.link == link;
 
   @override
-  int get hashCode => Object.hash(status, method, paidOn, amount, stripeId);
+  int get hashCode =>
+      Object.hash(status, method, paidOn, amount, stripeId, link);
+}
+
+/// A one-time Stripe payment link made for a session.
+class SessionPaymentLink {
+  const SessionPaymentLink({
+    required this.id,
+    required this.url,
+    required this.amount,
+    required this.createdOn,
+  });
+
+  /// "plink_…".
+  final String id;
+  final String url;
+
+  /// What it charges, in dollars.
+  final double amount;
+  final DateTime createdOn;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'url': url,
+    'amount': amount,
+    'createdOn': dateOnly(createdOn),
+  };
+
+  factory SessionPaymentLink.fromJson(Map<String, dynamic> json) =>
+      SessionPaymentLink(
+        id: json['id'] as String,
+        url: json['url'] as String,
+        amount: (json['amount'] as num).toDouble(),
+        createdOn: DateTime.parse(json['createdOn'] as String),
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is SessionPaymentLink &&
+      other.id == id &&
+      other.url == url &&
+      other.amount == amount &&
+      other.createdOn == createdOn;
+
+  @override
+  int get hashCode => Object.hash(id, url, amount, createdOn);
 }
 
 String _two(int n) => n.toString().padLeft(2, '0');

@@ -18,6 +18,8 @@ import '../../widgets/payment_fields.dart';
 import '../../services/client_jobs.dart';
 import '../../services/policy_forms.dart' show PolicyProgress;
 import '../../state/policy_forms_provider.dart';
+import '../../state/stripe_provider.dart';
+import '../payments/payment_link_dialog.dart';
 import '../policy_forms/policy_forms_page.dart';
 import '../../services/jobs.dart' show formatClock, formatHours;
 import 'client_status.dart';
@@ -446,6 +448,7 @@ class _ClientDetails extends ConsumerWidget {
           entries: jobs,
           now: now,
           onSave: (edit) => save(edit),
+          stripeConnected: ref.watch(stripeKeyProvider) != null,
         ),
         if (signed) ...[const SizedBox(height: 24), ...policyDoc],
       ],
@@ -1747,6 +1750,7 @@ class _JobsSection extends StatefulWidget {
     required this.entries,
     required this.now,
     required this.onSave,
+    this.stripeConnected = false,
   });
 
   final SavedAddress client;
@@ -1754,6 +1758,9 @@ class _JobsSection extends StatefulWidget {
   final DateTime now;
   final Future<void> Function(SavedAddress Function(SavedAddress c) edit)
   onSave;
+
+  /// Stripe is connected, so sessions can get payment links.
+  final bool stripeConnected;
 
   @override
   State<_JobsSection> createState() => _JobsSectionState();
@@ -1813,6 +1820,13 @@ class _JobsSectionState extends State<_JobsSection> {
       builder: (_) => _BillingDialog(
         initial: current,
         amount: sessionAmount(widget.client, e),
+        onPaymentLink: widget.stripeConnected || current.link != null
+            ? () => showPaymentLinkDialog(
+                context,
+                clientId: widget.client.id,
+                session: e,
+              )
+            : null,
       ),
     );
     if (picked == null || picked == current) return;
@@ -2106,6 +2120,7 @@ class _BillingChip extends StatelessWidget {
     final theme = Theme.of(context);
     final c = billingColors(billing.status, theme.colorScheme);
     final method = billing.status == BillingStatus.paid ? billing.method : null;
+    final note = method?.label ?? (billing.link == null ? null : 'Stripe link');
     return Tooltip(
       message: 'Billing',
       child: Material(
@@ -2124,9 +2139,9 @@ class _BillingChip extends StatelessWidget {
                   billing.status.label,
                   style: theme.textTheme.labelMedium?.copyWith(color: c.fg),
                 ),
-                if (method != null)
+                if (note != null)
                   Text(
-                    method.label,
+                    note,
                     style: theme.textTheme.labelSmall?.copyWith(color: c.fg),
                   ),
               ],
@@ -2140,10 +2155,18 @@ class _BillingChip extends StatelessWidget {
 
 /// Set a session's billing status, and how it was paid.
 class _BillingDialog extends StatefulWidget {
-  const _BillingDialog({required this.initial, required this.amount});
+  const _BillingDialog({
+    required this.initial,
+    required this.amount,
+    this.onPaymentLink,
+  });
 
   final SessionBilling initial;
   final double? amount;
+
+  /// Opens the session's Stripe payment link (null: Stripe isn't
+  /// connected).
+  final VoidCallback? onPaymentLink;
 
   @override
   State<_BillingDialog> createState() => _BillingDialogState();
@@ -2193,6 +2216,23 @@ class _BillingDialogState extends State<_BillingDialog> {
                   onChanged: (p) => setState(() => _paid = p),
                 ),
               ],
+              if (widget.onPaymentLink != null &&
+                  widget.initial.status != BillingStatus.paid) ...[
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.link),
+                  label: Text(
+                    widget.initial.link == null
+                        ? 'Make a Stripe payment link'
+                        : 'Payment link sent · '
+                              '${formatDollars(widget.initial.link!.amount)}',
+                  ),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    widget.onPaymentLink!();
+                  },
+                ),
+              ],
             ],
           ),
         ),
@@ -2220,7 +2260,10 @@ class _BillingDialogState extends State<_BillingDialog> {
                           // Still the Stripe payment it was matched to.
                           stripeId: widget.initial.stripeId,
                         )
-                      : SessionBilling(status: _status),
+                      : SessionBilling(
+                          status: _status,
+                          link: widget.initial.link,
+                        ),
                 ),
           child: const Text('Save'),
         ),
