@@ -17,7 +17,6 @@ abstract final class SyncedField {
   static const spreadsheetId = 'spreadsheetId';
   static const apiKey = 'apiKey';
   static const bookingUrl = 'bookingUrl';
-  static const policyDocName = 'policyDocName';
 
   static const all = [
     home,
@@ -26,7 +25,6 @@ abstract final class SyncedField {
     spreadsheetId,
     apiKey,
     bookingUrl,
-    policyDocName,
   ];
 }
 
@@ -37,7 +35,6 @@ class AppSettings {
     this.ratePerMile,
     this.spreadsheetId,
     this.bookingUrl,
-    this.policyDocName,
     this.changedAt = const {},
   });
 
@@ -57,10 +54,6 @@ class AppSettings {
   /// Availability tab.
   final String? bookingUrl;
 
-  /// Signed policy PDFs in Drive have this in their name (null: the
-  /// default, see `defaultPolicyDocName`).
-  final String? policyDocName;
-
   /// When each [SyncedField] was last changed on this device (or arrived
   /// from another). The newer change wins when devices sync.
   final Map<String, DateTime> changedAt;
@@ -73,7 +66,6 @@ class AppSettings {
     String? spreadsheetId,
     String? bookingUrl,
     bool clearBookingUrl = false,
-    String? policyDocName,
     Map<String, DateTime>? changedAt,
   }) => AppSettings(
     home: home ?? this.home,
@@ -81,7 +73,6 @@ class AppSettings {
     ratePerMile: clearRatePerMile ? null : (ratePerMile ?? this.ratePerMile),
     spreadsheetId: spreadsheetId ?? this.spreadsheetId,
     bookingUrl: clearBookingUrl ? null : (bookingUrl ?? this.bookingUrl),
-    policyDocName: policyDocName ?? this.policyDocName,
     changedAt: changedAt ?? this.changedAt,
   );
 
@@ -95,7 +86,6 @@ class AppSettings {
     if (ratePerMile != null) 'ratePerMile': ratePerMile,
     if (spreadsheetId != null) 'spreadsheetId': spreadsheetId,
     if (bookingUrl != null) 'bookingUrl': bookingUrl,
-    if (policyDocName != null) 'policyDocName': policyDocName,
     if (changedAt.isNotEmpty)
       'changedAt': {
         for (final e in changedAt.entries) e.key: e.value.toIso8601String(),
@@ -113,7 +103,6 @@ class AppSettings {
     ratePerMile: (json['ratePerMile'] as num?)?.toDouble(),
     spreadsheetId: json['spreadsheetId'] as String?,
     bookingUrl: json['bookingUrl'] as String?,
-    policyDocName: json['policyDocName'] as String?,
     changedAt: {
       for (final e
           in ((json['changedAt'] as Map<String, dynamic>?) ?? const {}).entries)

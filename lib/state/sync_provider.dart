@@ -13,10 +13,14 @@ import '../services/google_account_desktop.dart';
 import '../services/mileage_sheet.dart';
 import '../services/jobs.dart' show jobMiles, summarizeJob;
 import '../services/ledger.dart';
+import '../services/local_store.dart';
+import '../services/policy_forms.dart';
 import '../services/settings_sync.dart';
+import 'calendar_provider.dart';
 import 'leads_provider.dart';
 import 'money_provider.dart';
-import 'policy_docs_provider.dart';
+import 'policy_forms_provider.dart';
+import 'stripe_provider.dart';
 import 'providers.dart';
 
 /// Google sign-in for this platform, or null when this build has no
@@ -132,6 +136,47 @@ class SyncNotifier extends Notifier<SyncState> {
     state = const SyncState(SyncPhase.signedOut);
   }
 
+  /// Signs out, makes this device forget the old account (its
+  /// spreadsheet, form responses, signed docs and calendars) and, unless
+  /// [keepData], erases clients, trips, sessions, payments and expenses
+  /// here. Then opens sign-in to pick the new account, which gets its own
+  /// spreadsheet. Nothing in the old account's Drive is touched.
+  Future<void> switchAccount({required bool keepData}) async {
+    await signOut();
+    await _forgetAccount(keepData: keepData);
+    await signIn();
+  }
+
+  Future<void> _forgetAccount({required bool keepData}) async {
+    await ref.read(localStoreProvider).forgetAccount(keepData: keepData);
+    // The Stripe connection belongs with the account (a test account would
+    // use a Stripe test key).
+    await ref.read(stripeKeyProvider.notifier).forget();
+    for (final p in [
+      stripeKeyProvider,
+      stripeProvider,
+      settingsProvider,
+      addressesProvider,
+      tripsProvider,
+      jobsProvider,
+      otherDeviceJobsProvider,
+      leadsProvider,
+      leadStatesProvider,
+      clubRegistrationsProvider,
+      policySignaturesProvider,
+      signatureDecisionsProvider,
+      calendarProvider,
+      ...syncedRecordProviders,
+    ]) {
+      ref.invalidate(p);
+    }
+    if (keepData) {
+      // Upload everything again, to the new account's spreadsheet.
+      await ref.read(tripsProvider.notifier).markAllUnsynced();
+      await ref.read(jobsProvider.notifier).markAllUnsynced();
+    }
+  }
+
   /// A synced setting changed on this device: push it shortly.
   void localChanged() {
     if (_remote == null) return;
@@ -158,7 +203,19 @@ class SyncNotifier extends Notifier<SyncState> {
     } catch (_) {
       // Email is for display and background uploads; not required.
     }
-    await ref.read(localStoreProvider).setGoogleEmail(session.email);
+    final store = ref.read(localStoreProvider);
+    final email = session.email;
+    // Signed out and back in with a different account: don't write to the
+    // old account's spreadsheet (it can't open it). Keep the data; it
+    // moves to the new account.
+    final previous = store.dataAccount;
+    if (email != null &&
+        previous != null &&
+        previous.toLowerCase() != email.toLowerCase()) {
+      await _forgetAccount(keepData: true);
+    }
+    if (email != null) await store.setDataAccount(email);
+    await store.setGoogleEmail(email);
     await syncNow();
   }
 
@@ -186,6 +243,15 @@ class SyncNotifier extends Notifier<SyncState> {
       final merged = dedupeClients(mergeDocs(local, theirs ?? const {}));
 
       if (!docsEqual(merged, local)) {
+        // The Stripe key, if entered (or removed) on the other device.
+        final stripeKey = merged[stripeKeyField];
+        final keyAt = ref.read(stripeKeyProvider.notifier).changedAt;
+        if (stripeKey != null &&
+            (keyAt == null || stripeKey.at.isAfter(keyAt))) {
+          await ref
+              .read(stripeKeyProvider.notifier)
+              .setFromSync(stripeKey.value as String?, stripeKey.at);
+        }
         final applied = applyDoc(merged, settings, apiKey);
         await ref
             .read(settingsProvider.notifier)
@@ -216,14 +282,14 @@ class SyncNotifier extends Notifier<SyncState> {
         await ref
             .read(otherDeviceJobsProvider.notifier)
             .replace(otherDeviceJobs(merged, _localJobIds()));
-        // Signed policy docs matched on the other device.
+        // Policy form responses matched on the other device.
         await ref
-            .read(signedDocDecisionsProvider.notifier)
+            .read(signatureDecisionsProvider.notifier)
             .replaceFromSync(
-              signedDocDecisionsFromDoc(
+              signatureDecisionsFromDoc(
                 mergeDocs(
-                  signedDocDecisionDoc(ref.read(signedDocDecisionsProvider)),
-                  entriesWithPrefix(merged, signedDocPrefix),
+                  signatureDecisionDoc(ref.read(signatureDecisionsProvider)),
+                  entriesWithPrefix(merged, signaturePrefix),
                 ),
               ),
             );
@@ -244,6 +310,11 @@ class SyncNotifier extends Notifier<SyncState> {
             );
       }
 
+      // New Stripe payments (if connected; at most every few minutes),
+      // before the spreadsheet is written so its Payments tab has them.
+      // Errors are shown in Settings.
+      await ref.read(stripeProvider.notifier).refresh();
+
       // Spreadsheet: create it if neither device has, then upload trips.
       // A failure here is reported but doesn't stop settings syncing.
       String? sheetError;
@@ -252,14 +323,13 @@ class SyncNotifier extends Notifier<SyncState> {
       } on SheetException catch (e) {
         sheetError = e.message;
       }
-      // New leads from the website's form (if it's linked to the sheet).
+      // New leads, Dunn Club sign-ups and signed policies from the forms
+      // linked to the spreadsheet.
       try {
-        await _syncLeads();
+        await _syncForms();
       } catch (_) {
         // Shown as before; tried again next sync.
       }
-      // Newly signed policy docs (if Drive access was given).
-      await ref.read(signedDocsProvider.notifier).check();
 
       // Push settings (including a just-created spreadsheet's ID) and
       // clients.
@@ -292,14 +362,16 @@ class SyncNotifier extends Notifier<SyncState> {
     }
   }
 
-  /// Everything this device syncs: settings, API key, clients and
+  /// Everything this device syncs: settings, API keys, clients and
   /// donation centers.
   SyncDoc _localDoc() => {
+    if (ref.read(stripeKeyProvider.notifier).changedAt case final at?)
+      stripeKeyField: SyncField(ref.read(stripeKeyProvider), at),
     ...docFromLocal(ref.read(settingsProvider), ref.read(apiKeyProvider)),
     ..._localClientDoc(),
     ..._localDonationDoc(),
     ...leadDocFromLocal(ref.read(leadStatesProvider)),
-    ...signedDocDecisionDoc(ref.read(signedDocDecisionsProvider)),
+    ...signatureDecisionDoc(ref.read(signatureDecisionsProvider)),
     for (final p in syncedRecordProviders) ...ref.read(p.notifier).toDoc(),
     ...ref.read(otherDeviceJobsProvider),
     ..._localJobDoc(),
@@ -326,20 +398,25 @@ class SyncNotifier extends Notifier<SyncState> {
     ref.read(localStoreProvider).loadClientDeletions(),
   );
 
-  Future<void> _syncLeads() async {
+  Future<void> _syncForms() async {
     final session = _session;
     final id = ref.read(settingsProvider).spreadsheetId;
     if (session == null || id == null) return;
     final sheet = ref.read(mileageSheetFactoryProvider)(session);
     final tabs = await sheet.readFormTabs(id);
-    // The website contact form asks for a phone number; any other linked
-    // form is the Dunn Club sign-up.
-    final contact = tabs.values.where(
-      (rows) => rows.isNotEmpty && isContactFormHeader(rows.first),
-    );
-    final club = tabs.values.where(
-      (rows) => rows.isNotEmpty && !isContactFormHeader(rows.first),
-    );
+    // Policies forms ask for a typed signature; the website contact form
+    // asks for a phone number; any other linked form is the Dunn Club
+    // sign-up.
+    final kinds = {
+      for (final e in tabs.entries)
+        if (e.value.isNotEmpty) e.key: formKindOf(e.value.first),
+    };
+    Iterable<List<List<String>>> of(FormKind kind) => [
+      for (final e in kinds.entries)
+        if (e.value == kind) tabs[e.key]!,
+    ];
+    final contact = of(FormKind.contact);
+    final club = of(FormKind.club);
     await ref
         .read(leadsProvider.notifier)
         .replace(
@@ -349,6 +426,11 @@ class SyncNotifier extends Notifier<SyncState> {
         );
     await ref.read(clubRegistrationsProvider.notifier).replace([
       for (final rows in club) ...parseClubResponses(rows),
+    ]);
+    await ref.read(policySignaturesProvider.notifier).replace([
+      for (final e in kinds.entries)
+        if (e.value == FormKind.policy)
+          ...parsePolicyResponses(e.key, tabs[e.key]!),
     ]);
   }
 
@@ -362,15 +444,15 @@ class SyncNotifier extends Notifier<SyncState> {
       await store.setRecordsRaw(_ledgerWrittenKey, '');
     }
     final payments = paymentRows(ref.read(ledgerProvider));
-    final expenses = expenseRows(ref.read(expensesProvider));
+    final expenses = expenseRows(ref.read(allExpensesProvider));
     final written = '$id|${jsonEncode([payments, expenses]).hashCode}';
     if (store.recordsRaw(_ledgerWrittenKey) == written) return;
     await sheet.writeLedger(id, payments: payments, expenses: expenses);
     await store.setRecordsRaw(_ledgerWrittenKey, written);
   }
 
-  static const _recordsSheetKey = 'records_sheet_v1';
-  static const _ledgerWrittenKey = 'ledger_written_v1';
+  static const _recordsSheetKey = LocalStore.recordsSheetKey;
+  static const _ledgerWrittenKey = LocalStore.ledgerWrittenKey;
 
   Future<void> _syncTrips({bool retried = false}) async {
     final session = _session;

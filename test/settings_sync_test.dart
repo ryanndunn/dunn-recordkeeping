@@ -11,8 +11,9 @@ import 'package:mileage_log/models/lead.dart';
 import 'package:mileage_log/state/leads_provider.dart';
 import 'package:mileage_log/models/money.dart';
 import 'package:mileage_log/state/money_provider.dart';
-import 'package:mileage_log/services/policy_docs.dart';
-import 'package:mileage_log/state/policy_docs_provider.dart';
+import 'package:mileage_log/state/policy_forms_provider.dart';
+import 'package:mileage_log/services/stripe.dart';
+import 'package:mileage_log/state/stripe_provider.dart';
 import 'package:mileage_log/models/place.dart';
 import 'package:mileage_log/models/saved_address.dart';
 import 'package:mileage_log/models/trip.dart';
@@ -48,20 +49,30 @@ class FakeRemote implements SettingsRemote {
 class FakeAccount implements GoogleAccountService {
   bool signedIn = false;
 
+  /// The account picked at the next sign-in.
+  String email = 'me@example.com';
+
   @override
   Future<GoogleSession?> restore() async =>
-      signedIn ? GoogleSession(client: http.Client()) : null;
+      signedIn ? GoogleSession(client: http.Client(), email: email) : null;
+
+  /// The next sign-in is backed out of.
+  bool cancelNext = false;
 
   @override
   Future<GoogleSession> signIn() async {
+    if (cancelNext) {
+      cancelNext = false;
+      throw const GoogleAccountException('Cancelled.', cancelled: true);
+    }
     signedIn = true;
-    return GoogleSession(client: http.Client());
+    return GoogleSession(client: http.Client(), email: email);
   }
 
   @override
   Future<void> signOut() async => signedIn = false;
 
-  /// Extra permissions given (signed policy docs, calendar).
+  /// Extra permissions given (calendar).
   final granted = <String>{};
 
   @override
@@ -142,17 +153,17 @@ class MemoryLocalStore implements LocalStore {
   @override
   Future<void> setCalendarsShownRaw(String raw) async => _calendarsShown = raw;
 
-  String? _signedDocs;
-  String? _signedDocDecisions;
+  String? _signatures;
+  String? _signatureDecisions;
   @override
-  String? get signedDocsRaw => _signedDocs;
+  String? get policySignaturesRaw => _signatures;
   @override
-  Future<void> setSignedDocsRaw(String raw) async => _signedDocs = raw;
+  Future<void> setPolicySignaturesRaw(String raw) async => _signatures = raw;
   @override
-  String? get signedDocDecisionsRaw => _signedDocDecisions;
+  String? get signatureDecisionsRaw => _signatureDecisions;
   @override
-  Future<void> setSignedDocDecisionsRaw(String raw) async =>
-      _signedDocDecisions = raw;
+  Future<void> setSignatureDecisionsRaw(String raw) async =>
+      _signatureDecisions = raw;
 
   String? _leads;
   String? _leadStates;
@@ -208,6 +219,67 @@ class MemoryLocalStore implements LocalStore {
   @override
   Future<void> saveSettings(AppSettings s) async =>
       _settingsJson = jsonEncode(s.toJson());
+  String? _stripePayments;
+  DateTime? _stripeKeyChanged;
+  @override
+  String? get stripePaymentsRaw => _stripePayments;
+  @override
+  Future<void> setStripePaymentsRaw(String? raw) async => _stripePayments = raw;
+  @override
+  DateTime? get stripeKeyChangedAt => _stripeKeyChanged;
+  @override
+  Future<void> setStripeKeyChangedAt(DateTime? at) async =>
+      _stripeKeyChanged = at;
+
+  String? _dataAccount;
+  @override
+  String? get dataAccount => _dataAccount;
+  @override
+  Future<void> setDataAccount(String email) async => _dataAccount = email;
+
+  @override
+  Future<void> forgetAccount({required bool keepData}) async {
+    final s = loadSettings();
+    await saveSettings(
+      AppSettings(
+        home: s.home,
+        navApp: s.navApp,
+        ratePerMile: s.ratePerMile,
+        bookingUrl: s.bookingUrl,
+        changedAt: {...s.changedAt}..remove(SyncedField.spreadsheetId),
+      ),
+    );
+    _dataAccount = null;
+    _styledSheet = null;
+    _pendingDeletes = {};
+    _otherJobs = null;
+    _leads = null;
+    _leadStates = null;
+    _calendarsShown = null;
+    _signatures = null;
+    _signatureDecisions = null;
+    _stripePayments = null;
+    _stripeKeyChanged = null;
+    for (final k in [
+      LocalStore.clubRegistrationsKey,
+      LocalStore.clubDecisionsKey,
+      LocalStore.recordsSheetKey,
+      LocalStore.ledgerWrittenKey,
+      LocalStore.stripeDecisionsKey,
+      if (!keepData) ...[LocalStore.manualPaymentsKey, LocalStore.expensesKey],
+    ]) {
+      _records.remove(k);
+    }
+    if (!keepData) {
+      _addresses = [];
+      _clientDeletions = {};
+      _trips = [];
+      _jobs = [];
+      _lastStop = null;
+      _lastDeparture = null;
+    }
+  }
+
   @override
   double? cachedMiles(String key) => _distances[key];
   @override
@@ -225,12 +297,16 @@ class FakeSheet implements MileageSheet {
   /// A second linked form (Dunn Club sign-ups), per spreadsheet.
   final clubResponses = <String, List<List<String>>>{};
 
+  /// Policies forms' tabs (by tab name), per spreadsheet.
+  final policyResponses = <String, Map<String, List<List<String>>>>{};
+
   @override
   Future<Map<String, List<List<String>>>> readFormTabs(String id) async {
     if (offline) throw const SheetException('offline');
     return {
       'Form Responses 1': ?formResponses[id],
       'Form Responses 2': ?clubResponses[id],
+      ...?policyResponses[id],
     };
   }
 
@@ -320,34 +396,26 @@ class FakeSheet implements MileageSheet {
 
 /// One simulated device: its own storage, the shared remote.
 /// Signed PDFs "in Drive".
-class FakeSignedDocs implements SignedDocSource {
-  final docs = <SignedDoc>[];
-  String? lastName;
-
-  @override
-  Future<List<SignedDoc>> find(String nameContains) async {
-    lastName = nameContains;
-    return [...docs];
-  }
-}
-
 Future<ProviderContainer> device(
   FakeRemote remote, {
   required DateTime Function() clock,
   FakeSheet? sheet,
   DistanceService? distance,
   FakeAccount? account,
-  FakeSignedDocs? signedDocs,
+
+  /// The Drive sync file of whichever account is signed in (default:
+  /// [remote]).
+  FakeRemote Function()? remoteOf,
+  FakeStripe? stripe,
 }) async {
   final container = ProviderContainer(
     overrides: [
       localStoreProvider.overrideWithValue(MemoryLocalStore()),
       secretStoreProvider.overrideWithValue(MemorySecretStore()),
       googleAccountServiceProvider.overrideWithValue(account ?? FakeAccount()),
-      signedDocSourceFactoryProvider.overrideWithValue(
-        (_) => signedDocs ?? FakeSignedDocs(),
+      settingsRemoteFactoryProvider.overrideWithValue(
+        (_) => remoteOf?.call() ?? remote,
       ),
-      settingsRemoteFactoryProvider.overrideWithValue((_) => remote),
       mileageSheetFactoryProvider.overrideWithValue(
         (_) => sheet ?? FakeSheet(),
       ),
@@ -355,10 +423,33 @@ Future<ProviderContainer> device(
         distance ?? const DemoDistanceService(),
       ),
       clockProvider.overrideWithValue(clock),
+      stripeSourceFactoryProvider.overrideWithValue(
+        (key) => (stripe ?? FakeStripe())..keysUsed.add(key),
+      ),
     ],
   );
   addTearDown(container.dispose);
   return container;
+}
+
+/// Stands in for Stripe: the payments it has, and a key it rejects.
+class FakeStripe implements StripeSource {
+  final payments = <StripePayment>[];
+  final keysUsed = <String>[];
+  String? rejectKey;
+  int reads = 0;
+
+  @override
+  Future<List<StripePayment>> paymentsSince(DateTime since) async {
+    if (keysUsed.isNotEmpty && keysUsed.last == rejectKey) {
+      throw const StripeException('Invalid API Key provided', badKey: true);
+    }
+    reads++;
+    return [
+      for (final p in payments)
+        if (!p.at.isBefore(since)) p,
+    ];
+  }
 }
 
 void main() {
@@ -573,6 +664,58 @@ void main() {
       await tester.tap(find.text('Sign out'));
       await tester.pumpAndSettle();
       expect(find.text('Sign in with Google'), findsOneWidget);
+    });
+
+    testWidgets('Settings: Switch account asks first, then starts fresh', (
+      tester,
+    ) async {
+      final account = FakeAccount()..email = 'test@example.com';
+      final store = MemoryLocalStore();
+      await store.saveAddresses([
+        const SavedAddress(
+          id: 'c1',
+          name: 'Pretend Client',
+          address: '2 Main St',
+        ),
+      ]);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localStoreProvider.overrideWithValue(store),
+            secretStoreProvider.overrideWithValue(MemorySecretStore()),
+            googleAccountServiceProvider.overrideWithValue(account),
+            settingsRemoteFactoryProvider.overrideWithValue(
+              (_) => FakeRemote(),
+            ),
+            mileageSheetFactoryProvider.overrideWithValue((_) => FakeSheet()),
+            placesServiceProvider.overrideWithValue(null),
+            distanceServiceProvider.overrideWithValue(
+              const DemoDistanceService(),
+            ),
+          ],
+          child: const MileageApp(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Sign in'));
+      await tester.pumpAndSettle();
+      expect(find.text('test@example.com'), findsOneWidget);
+
+      await tester.tap(find.text('Switch account'));
+      await tester.pumpAndSettle();
+      // Nothing happens until a choice is made.
+      final go = find.widgetWithText(FilledButton, 'Switch account');
+      expect(tester.widget<FilledButton>(go).onPressed, isNull);
+      await tester.tap(find.text('Start fresh'));
+      await tester.pumpAndSettle();
+      account.email = 'business@example.com';
+      await tester.tap(find.widgetWithText(FilledButton, 'Erase and switch'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('business@example.com'), findsOneWidget);
+      expect(store.loadAddresses(), isEmpty);
     });
 
     test('signing out stops syncing', () async {
@@ -930,86 +1073,184 @@ void main() {
       );
     });
 
-    test('a signed policy doc in Drive marks the client signed, on both '
-        'devices', () async {
+    test('policies form responses mark clients signed, at the agreed rate, '
+        'on both devices', () async {
       var t = now;
       final remote = FakeRemote();
-      final drive = FakeSignedDocs();
-      final phoneAccount = FakeAccount();
-      final phone = await device(
-        remote,
-        clock: () => t,
-        account: phoneAccount,
-        signedDocs: drive,
-      );
-      final mac = await device(remote, clock: () => t, signedDocs: drive);
+      final sheet = FakeSheet();
+      final phone = await device(remote, clock: () => t, sheet: sheet);
+      final mac = await device(remote, clock: () => t, sheet: sheet);
       await phone.read(syncProvider.notifier).signIn();
       await mac.read(syncProvider.notifier).signIn();
-      final jane = await phone
-          .read(addressesProvider.notifier)
-          .add(name: 'Jane Smith', place: clinic);
-      await phone
-          .read(addressesProvider.notifier)
-          .add(name: 'Bob Jones', place: home);
+      final clients = phone.read(addressesProvider.notifier);
+      final jane = await clients.add(name: 'Jane Smith', place: clinic);
+      await clients.replace(jane.copyWith(email: 'Jane@Example.com'));
+      final bob = await clients.add(name: 'Bob Jones', place: home);
+      final carol = await clients.add(name: 'Carol Lee', place: clinic);
       await phone.read(syncProvider.notifier).syncNow();
       await mac.read(syncProvider.notifier).syncNow();
 
-      // Not connected yet: nothing is looked up.
-      expect(phone.read(signedDocsProvider).connected, isFalse);
-
-      drive.docs.addAll([
-        SignedDoc(
-          id: 'f1',
-          name: 'Policies - Smith, Jane.pdf',
-          at: DateTime(2026, 11, 14, 16),
-        ),
-        SignedDoc(
-          id: 'f2',
-          name: 'Policies (signed).pdf',
-          at: DateTime(2026, 11, 15, 10),
-        ),
-      ]);
+      List<String> header({double? rate}) => [
+        'Timestamp',
+        'Email',
+        if (rate != null)
+          'I agree to pay the hourly rate of \$${rate.toStringAsFixed(0)}'
+              '/hour via cash, check, credit card, or Zelle® prior to the '
+              'session.',
+        'I agree to the cancelation policy',
+        'I am requesting donation receipts for taxes.',
+        'The typing of my name will serve as my legally binding signature.',
+        'Today\'s Date',
+      ];
+      sheet.policyResponses['sheet-1'] = {
+        // The standard form: Jane, by email.
+        'Form Responses 3': [
+          header(rate: 75),
+          [
+            '11/14/2026 16:02:00',
+            'jane@example.com',
+            'Yes',
+            'Yes',
+            'No',
+            'Jane Smith',
+            '11/14/2026',
+          ],
+        ],
+        // The $90 form: Bob, by his typed name; and Carol's payer, who
+        // isn't a contact yet.
+        'Form Responses 4': [
+          header(rate: 90),
+          [
+            '11/15/2026 9:00:00',
+            'bobby@example.com',
+            'Yes',
+            'Yes',
+            'Yes',
+            'Jones, Bob',
+            '11/15/2026',
+          ],
+          [
+            '11/16/2026 18:30:00',
+            'dan@example.com',
+            'Yes',
+            'Yes',
+            'No',
+            'Dan Lee',
+            '11/16/2026',
+          ],
+        ],
+        // The form without payment, for the person worked with: Carol.
+        'Form Responses 5': [
+          header(),
+          [
+            '11/16/2026 10:00:00',
+            'carol@example.com',
+            'Yes',
+            'No',
+            'Carol Lee',
+            '',
+          ],
+        ],
+      };
       t = t.add(const Duration(minutes: 5));
-      await phone.read(signedDocsProvider.notifier).connect();
-      expect(drive.lastName, 'Polic');
+      await phone.read(syncProvider.notifier).syncNow();
 
-      // Jane's name is in the file name: signed, and active.
-      var j = phone.read(addressesProvider).firstWhere((c) => c.id == jane.id);
-      expect(j.policiesSignedOn, DateTime(2026, 11, 14));
-      expect(j.status, ClientStatus.active);
-      // The other doc needs a client picked.
-      expect(phone.read(unmatchedSignedDocsProvider).single.id, 'f2');
+      SavedAddress on(ProviderContainer d, String id) =>
+          d.read(addressesProvider).firstWhere((c) => c.id == id);
 
-      // The Mac (never connected) gets the result through sync.
+      // Jane signed the standard form: signed, active, $75.
+      expect(on(phone, jane.id).policiesSignedOn, DateTime(2026, 11, 14));
+      expect(on(phone, jane.id).status, ClientStatus.active);
+      expect(on(phone, jane.id).hourlyRate, 75);
+      // Bob signed the $90 form: his rate is now $90.
+      expect(on(phone, bob.id).policiesSignedOn, DateTime(2026, 11, 15));
+      expect(on(phone, bob.id).hourlyRate, 90);
+      // Carol signed hers (no payment), but nobody has agreed to pay yet.
+      expect(on(phone, carol.id).policiesSignedOn, isNull);
+      final carolSoFar = phone.read(policyProgressProvider(carol.id));
+      expect(carolSoFar.hasSigned(null), isTrue);
+      expect(carolSoFar.paymentSigned, isFalse);
+      // Dan (paying for Carol) needs a client picked.
+      final dan = phone.read(unmatchedSignaturesProvider).single;
+      expect(dan.signedName, 'Dan Lee');
+      expect(dan.includesPayment, isTrue);
+
+      // He's Carol's payer, someone new: added as her contact, and now
+      // she's signed, on the day the last form came in, at $90.
+      t = t.add(const Duration(minutes: 5));
+      await phone
+          .read(policySignaturesProvider.notifier)
+          .assign(dan, carol.id, newContact: true);
+      final c = on(phone, carol.id);
+      expect(c.contacts.single.name, 'Dan Lee');
+      expect(c.contacts.single.email, 'dan@example.com');
+      expect(c.contacts.single.label, 'Pays');
+      expect(c.policiesSignedOn, DateTime(2026, 11, 16));
+      expect(c.hourlyRate, 90);
+      expect(phone.read(unmatchedSignaturesProvider), isEmpty);
+
+      // The Mac gets all of it through sync.
       await phone.read(syncProvider.notifier).syncNow();
       await mac.read(syncProvider.notifier).syncNow();
-      j = mac.read(addressesProvider).firstWhere((c) => c.id == jane.id);
-      expect(j.policiesSignedOn, DateTime(2026, 11, 14));
+      expect(on(mac, carol.id).policiesSignedOn, DateTime(2026, 11, 16));
+      expect(on(mac, bob.id).hourlyRate, 90);
+      expect(mac.read(unmatchedSignaturesProvider), isEmpty);
       expect(
-        mac.read(signedDocDecisionsProvider.notifier).of('f1')?.clientId,
-        jane.id,
+        mac.read(signatureDecisionsProvider.notifier).of(dan.id)?.contactId,
+        c.contacts.single.id,
       );
 
-      // Picking a client by hand, then marking the client not signed:
-      // the doc isn't matched again.
-      final bob = phone
-          .read(addressesProvider)
-          .firstWhere((c) => c.name == 'Bob Jones');
-      await phone
-          .read(signedDocsProvider.notifier)
-          .assign(drive.docs[1], bob.id);
-      expect(phone.read(unmatchedSignedDocsProvider), isEmpty);
-      await phone
-          .read(addressesProvider.notifier)
-          .replace(
-            phone
-                .read(addressesProvider)
-                .firstWhere((c) => c.id == jane.id)
-                .copyWith(clearPoliciesSigned: true),
-          );
-      await phone.read(signedDocsProvider.notifier).check();
-      j = phone.read(addressesProvider).firstWhere((c) => c.id == jane.id);
-      expect(j.policiesSignedOn, isNull);
+      // Marking Jane not signed sticks: her form isn't matched again.
+      t = t.add(const Duration(minutes: 5));
+      await clients.replace(
+        on(phone, jane.id).copyWith(clearPoliciesSigned: true),
+      );
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(on(phone, jane.id).policiesSignedOn, isNull);
+    });
+
+    test('unchecking someone who hasn\'t signed completes the client', () async {
+      final sheet = FakeSheet();
+      final phone = await device(FakeRemote(), clock: () => now, sheet: sheet);
+      await phone.read(syncProvider.notifier).signIn();
+      final clients = phone.read(addressesProvider.notifier);
+      final added = await clients.add(name: 'Ed Park', place: clinic);
+      await clients.replace(
+        added.copyWith(
+          contacts: const [
+            ClientContact(
+              id: 'kim',
+              name: 'Kim Park',
+              email: 'kim@example.com',
+              label: 'Daughter',
+              signsPolicies: true,
+            ),
+          ],
+        ),
+      );
+      sheet.policyResponses['sheet-1'] = {
+        'Form Responses 3': [
+          [
+            'Timestamp',
+            'Email',
+            'I agree to pay the hourly rate of \$75/hour.',
+            'The typing of my name will serve as my legally binding signature.',
+          ],
+          ['11/18/2026 10:00:00', 'kim@example.com', 'Yes', 'Kim Park'],
+        ],
+      };
+      await phone.read(syncProvider.notifier).syncNow();
+      SavedAddress ed() =>
+          phone.read(addressesProvider).firstWhere((c) => c.id == added.id);
+      // Kim (his daughter) signed and pays; Ed himself hasn't signed.
+      expect(phone.read(policyProgressProvider(added.id)).missing, [null]);
+      expect(ed().policiesSignedOn, isNull);
+
+      // Ed doesn't need to sign after all.
+      await clients.replace(ed().copyWith(primarySigns: false));
+      await phone.read(policySignaturesProvider.notifier).recheck(added.id);
+      expect(ed().policiesSignedOn, DateTime(2026, 11, 18));
+      expect(ed().status, ClientStatus.active);
     });
 
     test('Dunn Club sign-ups, payments and expenses reach the other device '
@@ -1131,5 +1372,303 @@ void main() {
         );
       },
     );
+  });
+
+  group('switching Google account', () {
+    const clinic = Place(label: 'Clinic', address: '2 Main St', placeId: 'c');
+    final now = DateTime(2026, 11, 19, 9);
+
+    /// A phone signed in to a test account with a client, a trip, a
+    /// payment, home and the Maps key; [remotes] holds each account's
+    /// Drive sync file.
+    Future<
+      ({
+        ProviderContainer phone,
+        FakeAccount account,
+        FakeSheet sheet,
+        Map<String, FakeRemote> remotes,
+      })
+    >
+    testPhone() async {
+      final account = FakeAccount()..email = 'test@example.com';
+      final remotes = <String, FakeRemote>{};
+      final sheet = FakeSheet();
+      final phone = await device(
+        FakeRemote(),
+        clock: () => now,
+        sheet: sheet,
+        account: account,
+        remoteOf: () => remotes.putIfAbsent(account.email, FakeRemote.new),
+      );
+      await phone.read(settingsProvider.notifier).setHome(home);
+      await phone.read(apiKeyProvider.notifier).set('maps-key');
+      await phone.read(syncProvider.notifier).signIn();
+      await phone
+          .read(addressesProvider.notifier)
+          .add(name: 'Pretend Client', place: clinic);
+      await phone.read(tripsProvider.notifier).logTripTo(clinic);
+      await phone
+          .read(manualPaymentRecordsProvider.notifier)
+          .save(ManualPayment(id: 'p1', date: now, amount: 50, from: 'Pat'));
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(phone.read(settingsProvider).spreadsheetId, 'sheet-1');
+      return (phone: phone, account: account, sheet: sheet, remotes: remotes);
+    }
+
+    test(
+      'starting fresh erases test data and makes a new spreadsheet',
+      () async {
+        final t = await testPhone();
+        await t.phone.read(stripeKeyProvider.notifier).set('rk_test_x');
+        t.account.email = 'business@example.com';
+
+        await t.phone
+            .read(syncProvider.notifier)
+            .switchAccount(keepData: false);
+
+        final p = t.phone;
+        expect(p.read(syncProvider).email, 'business@example.com');
+        expect(p.read(syncProvider).phase, SyncPhase.ready);
+        expect(p.read(addressesProvider), isEmpty);
+        // A test Stripe key doesn't come along to the real account.
+        expect(p.read(stripeKeyProvider), isNull);
+        expect(
+          t.remotes['business@example.com']!.stored!.containsKey('stripeKey'),
+          isFalse,
+        );
+        expect(p.read(tripsProvider), isEmpty);
+        expect(p.read(manualPaymentsProvider), isEmpty);
+        // Not tied to an account: kept.
+        expect(p.read(settingsProvider).home, home);
+        expect(p.read(apiKeyProvider), 'maps-key');
+        // Its own spreadsheet, and nothing of the test account's in its Drive.
+        expect(p.read(settingsProvider).spreadsheetId, 'sheet-2');
+        final business = t.remotes['business@example.com']!.stored!;
+        expect(business['spreadsheetId']!.value, 'sheet-2');
+        expect(business.keys.where((k) => k.startsWith('client:')), isEmpty);
+        expect(business.keys.where((k) => k.startsWith('payment:')), isEmpty);
+        // The test account's Drive is left as it was.
+        final test = t.remotes['test@example.com']!.stored!;
+        expect(test['spreadsheetId']!.value, 'sheet-1');
+        expect(test.keys.where((k) => k.startsWith('client:')), hasLength(1));
+        expect(t.sheet.sheets['sheet-1'], hasLength(1));
+      },
+    );
+
+    test('keeping data copies it into the new account', () async {
+      final t = await testPhone();
+      t.account.email = 'business@example.com';
+
+      await t.phone.read(syncProvider.notifier).switchAccount(keepData: true);
+
+      final p = t.phone;
+      expect(p.read(addressesProvider).single.name, 'Pretend Client');
+      expect(p.read(manualPaymentsProvider).single.amount, 50);
+      expect(p.read(settingsProvider).spreadsheetId, 'sheet-2');
+      final trip = p.read(tripsProvider).single;
+      expect(trip.synced, isTrue);
+      expect(t.sheet.sheets['sheet-2']!.keys, [trip.id]);
+      final business = t.remotes['business@example.com']!.stored!;
+      expect(business.keys.where((k) => k.startsWith('client:')), hasLength(1));
+    });
+
+    test('backing out of the new sign-in leaves the device signed out and '
+        'reset', () async {
+      final t = await testPhone();
+      t.account.email = 'business@example.com';
+      t.account.cancelNext = true;
+      await t.phone.read(syncProvider.notifier).switchAccount(keepData: false);
+      expect(t.phone.read(syncProvider).phase, SyncPhase.signedOut);
+      expect(t.phone.read(addressesProvider), isEmpty);
+      expect(t.phone.read(settingsProvider).spreadsheetId, isNull);
+    });
+
+    test('signing in to another account after a plain sign-out moves to a '
+        'new spreadsheet, keeping the data', () async {
+      final t = await testPhone();
+      await t.phone.read(syncProvider.notifier).signOut();
+      t.account.email = 'business@example.com';
+      await t.phone.read(syncProvider.notifier).signIn();
+
+      final p = t.phone;
+      expect(p.read(settingsProvider).spreadsheetId, 'sheet-2');
+      expect(p.read(syncProvider).phase, SyncPhase.ready);
+      expect(p.read(addressesProvider), hasLength(1));
+      expect(t.sheet.sheets['sheet-2'], hasLength(1));
+    });
+
+    test('signing back in to the same account keeps its spreadsheet', () async {
+      final t = await testPhone();
+      await t.phone.read(syncProvider.notifier).signOut();
+      await t.phone.read(syncProvider.notifier).signIn();
+      expect(t.phone.read(settingsProvider).spreadsheetId, 'sheet-1');
+      expect(t.sheet.created, 1);
+    });
+  });
+
+  group('Stripe', () {
+    const clinic = Place(label: 'Clinic', address: '2 Main St', placeId: 'c');
+
+    test('payments are matched to sessions, counted once, and reach the '
+        'other device and the spreadsheet', () async {
+      var t = DateTime(2026, 11, 19, 9);
+      DateTime clock() => t;
+      final remote = FakeRemote();
+      final sheet = FakeSheet();
+      final stripe = FakeStripe()
+        ..rejectKey = 'rk_test_bad'
+        ..payments.addAll([
+          StripePayment(
+            id: 'cs_1',
+            at: DateTime(2026, 11, 17, 15),
+            amount: 300,
+            fee: 9,
+            email: 'jane@example.com',
+            name: 'Jane Smith',
+          ),
+          StripePayment(
+            id: 'cs_2',
+            at: DateTime(2026, 11, 18, 10),
+            amount: 300,
+            fee: 9,
+            email: 'bob@example.com',
+            name: 'Bob Jones',
+            method: PaymentMethod.stripeKlarna,
+          ),
+          StripePayment(
+            id: 'cs_3',
+            at: DateTime(2026, 11, 18, 11),
+            amount: 20,
+            fee: 0.88,
+            email: 'pat@example.com',
+            name: 'Pat Q',
+          ),
+        ]);
+      final mac = await device(
+        remote,
+        clock: clock,
+        sheet: sheet,
+        stripe: stripe,
+      );
+      final phone = await device(
+        remote,
+        clock: clock,
+        sheet: sheet,
+        stripe: stripe,
+      );
+      await mac.read(syncProvider.notifier).signIn();
+      await phone.read(syncProvider.notifier).signIn();
+
+      // Jane has one $300 session booked; Bob has two.
+      final clients = mac.read(addressesProvider.notifier);
+      ScheduledJob booking(String id, int day) => ScheduledJob(
+        id: id,
+        start: DateTime(2026, 11, day, 9),
+        end: DateTime(2026, 11, day, 12),
+      );
+      final jane = await clients.add(name: 'Jane Smith', place: clinic);
+      await clients.replace(
+        jane.copyWith(
+          email: 'jane@example.com',
+          hourlyRate: 100,
+          scheduled: [booking('j1', 20)],
+        ),
+      );
+      final bob = await clients.add(name: 'Bob Jones', place: home);
+      await clients.replace(
+        bob.copyWith(
+          email: 'bob@example.com',
+          hourlyRate: 100,
+          scheduled: [booking('b1', 21), booking('b2', 28)],
+        ),
+      );
+
+      // A full secret key isn't taken; a key Stripe rejects isn't kept.
+      final notifier = mac.read(stripeProvider.notifier);
+      expect(await notifier.connect('sk_live_123'), contains('restricted'));
+      expect(await notifier.connect('rk_test_bad'), 'Invalid API Key provided');
+      expect(mac.read(stripeKeyProvider), isNull);
+      expect(await notifier.connect(' rk_test_good '), isNull);
+      expect(mac.read(stripeKeyProvider), 'rk_test_good');
+      expect(mac.read(stripeProvider).payments, hasLength(3));
+
+      SavedAddress on(ProviderContainer d, String id) =>
+          d.read(addressesProvider).firstWhere((c) => c.id == id);
+
+      // Jane's payment fits her one session: marked paid from Stripe.
+      final j1 = on(mac, jane.id).billing['j1']!;
+      expect(j1.status, BillingStatus.paid);
+      expect(j1.stripeId, 'cs_1');
+      expect(j1.amount, 300);
+      expect(j1.paidOn, DateTime(2026, 11, 17));
+      // Bob's could be either session; Pat isn't a client.
+      expect(mac.read(unmatchedStripeProvider).map((p) => p.id), [
+        'cs_2',
+        'cs_3',
+      ]);
+
+      // Picked by hand: Bob's second session; Pat's is other income.
+      final cs2 = mac.read(stripeProvider).payments[1];
+      final b2 = notifier
+          .sessionsOf(bob.id)
+          .firstWhere((s) => s.scheduled?.id == 'b2');
+      await notifier.link(cs2, bob.id, b2);
+      await notifier.notForSession(mac.read(stripeProvider).payments[2]);
+      expect(mac.read(unmatchedStripeProvider), isEmpty);
+      expect(on(mac, bob.id).billing['b2']!.method, PaymentMethod.stripeKlarna);
+
+      // Changing your mind moves the payment: b2 is back to need to bill.
+      final b1 = notifier
+          .sessionsOf(bob.id)
+          .firstWhere((s) => s.scheduled?.id == 'b1');
+      await notifier.link(cs2, bob.id, b1);
+      expect(on(mac, bob.id).billing.containsKey('b2'), isFalse);
+      expect(on(mac, bob.id).billing['b1']!.stripeId, 'cs_2');
+
+      // In the books once each: $620, with the fees as an expense.
+      List<String> ids(ProviderContainer d) => [
+        for (final p in d.read(ledgerProvider)) p.id,
+      ];
+      expect(ids(mac), ['stripe:cs_3', 'stripe:cs_2', 'stripe:cs_1']);
+      final fees = mac
+          .read(allExpensesProvider)
+          .where((e) => e.id == 'stripefees:2026-11')
+          .single;
+      expect(fees.amount, 18.88);
+
+      // The phone gets the key, reads Stripe itself, and agrees.
+      t = t.add(const Duration(minutes: 1));
+      await mac.read(syncProvider.notifier).syncNow();
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(phone.read(stripeKeyProvider), 'rk_test_good');
+      expect(phone.read(stripeProvider).payments, hasLength(3));
+      expect(ids(phone), ids(mac));
+      expect(phone.read(unmatchedStripeProvider), isEmpty);
+      expect(on(phone, bob.id).billing['b1']!.stripeId, 'cs_2');
+      final rows = sheet.paymentRowsBySheet['sheet-1']!;
+      expect(rows.map((r) => r[5]), [300.0, 300.0, 20.0]);
+      expect(sheet.expenseRowsBySheet['sheet-1']!.single.sublist(1, 3), [
+        'Stripe',
+        'Bank & payment fees',
+      ]);
+
+      // Stripe isn't read again on every sync, only every few minutes.
+      final reads = stripe.reads;
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(stripe.reads, reads);
+      t = t.add(StripeNotifier.refreshEvery);
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(stripe.reads, reads + 1);
+
+      // Disconnecting on the Mac reaches the phone.
+      t = t.add(const Duration(minutes: 1));
+      await mac.read(stripeProvider.notifier).disconnect();
+      await mac.read(syncProvider.notifier).syncNow();
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(phone.read(stripeKeyProvider), isNull);
+      expect(phone.read(stripeProvider).payments, isEmpty);
+      // Sessions stay paid, now counted as session payments.
+      expect(ids(phone), contains('session:${jane.id}:j1'));
+    });
   });
 }

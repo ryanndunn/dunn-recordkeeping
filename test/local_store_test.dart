@@ -129,4 +129,102 @@ void main() {
       'x',
     ], reason: 'only the one not archived');
   });
+
+  group('switching Google account', () {
+    const home = Place(label: 'Home', address: '1 Home Rd', placeId: 'h');
+
+    Future<(LocalStore, SharedPreferences)> filledStore() async {
+      SharedPreferences.setMockInitialValues({
+        'addresses_v1': '[]',
+        'trips_v1': '[]',
+        'jobs_v1': '[]',
+        'client_deletions_v1': '{}',
+        'donation_centers_v1': '[]',
+        'distance_cache_v1': '{"a>b":3.2}',
+        'auto_trips_enabled_v1': true,
+        'leads_v1': '[]',
+        'lead_states_v1': '{}',
+        'policy_signatures_v1': '[]',
+        'policy_signature_decisions_v1': '{}',
+        'calendars_shown_v1': '[]',
+        'other_device_jobs_v1': '{}',
+        'styled_sheet_id_v6': 'old-sheet',
+        'data_account_v1': 'test@example.com',
+        LocalStore.manualPaymentsKey: '{}',
+        LocalStore.expensesKey: '{}',
+        LocalStore.clubDecisionsKey: '{}',
+        LocalStore.clubRegistrationsKey: '[]',
+        LocalStore.recordsSheetKey: 'old-sheet',
+        LocalStore.ledgerWrittenKey: 'old-sheet|1',
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final store = LocalStore(prefs);
+      await store.saveSettings(
+        const AppSettings(home: home, spreadsheetId: 'old-sheet')
+            .stamped(SyncedField.spreadsheetId, DateTime.utc(2026))
+            .stamped(SyncedField.home, DateTime.utc(2026)),
+      );
+      return (store, prefs);
+    }
+
+    const accountKeys = [
+      'leads_v1',
+      'lead_states_v1',
+      'policy_signatures_v1',
+      'policy_signature_decisions_v1',
+      'calendars_shown_v1',
+      'other_device_jobs_v1',
+      'styled_sheet_id_v6',
+      'data_account_v1',
+      LocalStore.clubDecisionsKey,
+      LocalStore.clubRegistrationsKey,
+      LocalStore.recordsSheetKey,
+      LocalStore.ledgerWrittenKey,
+    ];
+    const dataKeys = [
+      'addresses_v1',
+      'trips_v1',
+      'jobs_v1',
+      'client_deletions_v1',
+      LocalStore.manualPaymentsKey,
+      LocalStore.expensesKey,
+    ];
+    const alwaysKept = [
+      'donation_centers_v1',
+      'distance_cache_v1',
+      'auto_trips_enabled_v1',
+    ];
+
+    void expectSettingsReset(LocalStore store) {
+      final s = store.loadSettings();
+      expect(s.spreadsheetId, isNull);
+      expect(s.changedAt.containsKey(SyncedField.spreadsheetId), isFalse);
+      expect(s.home, home);
+      expect(s.changedAt.containsKey(SyncedField.home), isTrue);
+    }
+
+    test('starting fresh forgets the account and erases the data', () async {
+      final (store, prefs) = await filledStore();
+      await store.forgetAccount(keepData: false);
+      for (final k in [...accountKeys, ...dataKeys]) {
+        expect(prefs.containsKey(k), isFalse, reason: k);
+      }
+      for (final k in alwaysKept) {
+        expect(prefs.containsKey(k), isTrue, reason: k);
+      }
+      expectSettingsReset(store);
+    });
+
+    test('keeping data forgets only the account', () async {
+      final (store, prefs) = await filledStore();
+      await store.forgetAccount(keepData: true);
+      for (final k in accountKeys) {
+        expect(prefs.containsKey(k), isFalse, reason: k);
+      }
+      for (final k in [...dataKeys, ...alwaysKept]) {
+        expect(prefs.containsKey(k), isTrue, reason: k);
+      }
+      expectSettingsReset(store);
+    });
+  });
 }

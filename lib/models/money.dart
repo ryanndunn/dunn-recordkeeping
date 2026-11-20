@@ -209,7 +209,7 @@ class ClubDecision {
 }
 
 /// What kind of record a ledger payment comes from (to open or edit it).
-enum PaymentKind { session, club, manual }
+enum PaymentKind { session, club, manual, stripe }
 
 /// One row of the payments table, whatever it came from.
 class LedgerPayment {
@@ -226,8 +226,8 @@ class LedgerPayment {
     this.clientId,
   });
 
-  /// Stable: `session:<client>:<key>`, `club:<registration>` or the
-  /// manual payment's ID.
+  /// Stable: `session:<client>:<key>`, `club:<registration>`,
+  /// `stripe:<checkout session>` or the manual payment's ID.
   final String id;
   final PaymentKind kind;
   final DateTime date;
@@ -238,6 +238,6 @@ class LedgerPayment {
   final PaymentMethod? method;
   final String notes;
 
-  /// The client, for session payments.
+  /// The client, for session payments (and Stripe payments from one).
   final String? clientId;
 }

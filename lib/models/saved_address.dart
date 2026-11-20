@@ -138,6 +138,7 @@ class ClientContact {
     this.phone = '',
     this.email = '',
     this.label = '',
+    this.signsPolicies = false,
   });
 
   final String id;
@@ -148,17 +149,22 @@ class ClientContact {
   /// Who they are to the client, e.g. "Spouse" or "Pays". May be empty.
   final String label;
 
+  /// They need to sign the policies form before the client is signed.
+  final bool signsPolicies;
+
   ClientContact copyWith({
     String? name,
     String? phone,
     String? email,
     String? label,
+    bool? signsPolicies,
   }) => ClientContact(
     id: id,
     name: name ?? this.name,
     phone: phone ?? this.phone,
     email: email ?? this.email,
     label: label ?? this.label,
+    signsPolicies: signsPolicies ?? this.signsPolicies,
   );
 
   Map<String, dynamic> toJson() => {
@@ -167,6 +173,7 @@ class ClientContact {
     if (phone.isNotEmpty) 'phone': phone,
     if (email.isNotEmpty) 'email': email,
     if (label.isNotEmpty) 'label': label,
+    if (signsPolicies) 'signsPolicies': true,
   };
 
   factory ClientContact.fromJson(Map<String, dynamic> json) => ClientContact(
@@ -175,6 +182,7 @@ class ClientContact {
     phone: json['phone'] as String? ?? '',
     email: json['email'] as String? ?? '',
     label: json['label'] as String? ?? '',
+    signsPolicies: json['signsPolicies'] as bool? ?? false,
   );
 }
 
@@ -195,6 +203,7 @@ class SavedAddress {
     this.locations = const [],
     this.contacts = const [],
     this.contactLabel = '',
+    this.primarySigns = true,
     this.billing = const {},
     this.hourlyRate = defaultHourlyRate,
     this.policiesSignedOn,
@@ -235,9 +244,22 @@ class SavedAddress {
   /// The label on the client's own contact details (empty: "Primary").
   final String contactLabel;
 
+  /// The client themself needs to sign the policies form (usually; not
+  /// when, say, a family member signs for them).
+  final bool primarySigns;
+
+  /// Who needs to sign the policies form: contact IDs, and null for the
+  /// client themself.
+  Set<String?> get policySigners => {
+    if (primarySigns) null,
+    for (final c in contacts)
+      if (c.signsPolicies) c.id,
+  };
+
   /// The client themself, as the first contact (ID [primaryContactId]).
   ClientContact get primaryContact => ClientContact(
     id: primaryContactId,
+    signsPolicies: primarySigns,
     name: name,
     phone: phone,
     email: email,
@@ -344,6 +366,7 @@ class SavedAddress {
       locations: addresses.skip(1).toList(),
       contacts: contacts,
       contactLabel: contactLabel,
+      primarySigns: primarySigns,
       billing: billing,
       hourlyRate: hourlyRate,
       policiesSignedOn: policiesSignedOn,
@@ -367,6 +390,7 @@ class SavedAddress {
     List<ClientLocation>? locations,
     List<ClientContact>? contacts,
     String? contactLabel,
+    bool? primarySigns,
     Map<String, SessionBilling>? billing,
     double? hourlyRate,
     DateTime? policiesSignedOn,
@@ -390,6 +414,7 @@ class SavedAddress {
     locations: locations ?? this.locations,
     contacts: contacts ?? this.contacts,
     contactLabel: contactLabel ?? this.contactLabel,
+    primarySigns: primarySigns ?? this.primarySigns,
     billing: billing ?? this.billing,
     hourlyRate: hourlyRate ?? this.hourlyRate,
     policiesSignedOn: clearPoliciesSigned
@@ -420,6 +445,7 @@ class SavedAddress {
       'locations': [for (final l in locations) l.toJson()],
     if (contacts.isNotEmpty) 'contacts': [for (final c in contacts) c.toJson()],
     if (contactLabel.isNotEmpty) 'contactLabel': contactLabel,
+    if (!primarySigns) 'primarySigns': false,
     if (billing.isNotEmpty)
       'billing': {for (final e in billing.entries) e.key: e.value.toJson()},
     // Left out at the default, so clients saved before rates existed
@@ -456,6 +482,7 @@ class SavedAddress {
         ClientContact.fromJson(c as Map<String, dynamic>),
     ],
     contactLabel: json['contactLabel'] as String? ?? '',
+    primarySigns: json['primarySigns'] as bool? ?? true,
     billing: {
       for (final e
           in ((json['billing'] as Map<String, dynamic>?) ?? const {}).entries)

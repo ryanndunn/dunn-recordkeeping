@@ -29,12 +29,14 @@ class DesktopGoogleAccountService implements GoogleAccountService {
   /// Each extra permission is kept apart from the main sign-in (and from
   /// each other), so those never change.
   static String _extraName(String scope) => switch (scope) {
-    policyDocsScope => 'google_policy_credentials',
     calendarScope => 'google_calendar_credentials',
     _ => 'google_extra_${scope.hashCode}',
   };
 
-  static const _extraScopes = [policyDocsScope, calendarScope];
+  static const _extraScopes = [calendarScope];
+
+  /// Kept by older versions (Drive file names, for signed policy PDFs).
+  static const _legacyNames = ['google_policy_credentials'];
 
   @override
   Future<http.Client?> access(String scope) async {
@@ -57,11 +59,9 @@ class DesktopGoogleAccountService implements GoogleAccountService {
   @override
   Future<http.Client> grantAccess(String scope) async {
     try {
-      final client = await clientViaUserConsent(
-        _clientId,
-        [scope],
-        (url) => launchUrl(Uri.parse(url)),
-      ).timeout(const Duration(minutes: 5));
+      final client = await clientViaUserConsent(_clientId, [
+        scope,
+      ], _openConsent).timeout(const Duration(minutes: 5));
       await secrets.write(
         _extraName(scope),
         jsonEncode(client.credentials.toJson()),
@@ -85,6 +85,21 @@ class DesktopGoogleAccountService implements GoogleAccountService {
       (c) => secrets.write(_extraName(scope), jsonEncode(c.toJson())),
     );
     return client;
+  }
+
+  /// Opens Google's consent page in the browser, always asking which
+  /// account to use (the browser may be signed in to several) and always
+  /// handing back a refresh token, even for an account used before.
+  static void _openConsent(String url) {
+    final uri = Uri.parse(url);
+    launchUrl(
+      uri.replace(
+        queryParameters: {
+          ...uri.queryParameters,
+          'prompt': 'select_account consent',
+        },
+      ),
+    );
   }
 
   AutoRefreshingAuthClient? _client;
@@ -114,7 +129,7 @@ class DesktopGoogleAccountService implements GoogleAccountService {
       client = await clientViaUserConsent(
         _clientId,
         googleScopes,
-        (url) => launchUrl(Uri.parse(url)),
+        _openConsent,
       ).timeout(const Duration(minutes: 5));
     } on TimeoutException {
       throw const GoogleAccountException(
@@ -136,6 +151,9 @@ class DesktopGoogleAccountService implements GoogleAccountService {
     await secrets.write(_credentialsName, null);
     for (final scope in _extraScopes) {
       await secrets.write(_extraName(scope), null);
+    }
+    for (final name in _legacyNames) {
+      await secrets.write(name, null);
     }
   }
 

@@ -181,12 +181,48 @@ class LocalStore {
   Future<void> setLeadStatesRaw(String raw) =>
       _prefs.setString(_leadStatesKey, raw);
 
+  static const manualPaymentsKey = 'manual_payments_v1';
+  static const expensesKey = 'expenses_v1';
+  static const clubDecisionsKey = 'club_decisions_v1';
+  static const clubRegistrationsKey = 'club_registrations_v1';
+
+  /// The spreadsheet already given the Payments/Expenses/Tax Summary tabs.
+  static const recordsSheetKey = 'records_sheet_v1';
+
+  /// What was last written to those tabs (spreadsheet ID and a hash).
+  static const ledgerWrittenKey = 'ledger_written_v1';
+
   /// Records kept as JSON under [key] (payments, expenses, Dunn Club
   /// sign-ups and decisions, and what was last written to the sheet).
   String? recordsRaw(String key) => _prefs.getString(key);
 
   Future<void> setRecordsRaw(String key, String raw) =>
       _prefs.setString(key, raw);
+
+  static const _stripePaymentsKey = 'stripe_payments_v1';
+  static const _stripeKeyChangedKey = 'stripe_key_changed_v1';
+
+  /// Synced decisions about Stripe payments (records, see
+  /// SyncedRecordsNotifier).
+  static const stripeDecisionsKey = 'stripe_decisions_v1';
+
+  /// Stripe payments as last fetched (JSON), with when.
+  String? get stripePaymentsRaw => _prefs.getString(_stripePaymentsKey);
+
+  Future<void> setStripePaymentsRaw(String? raw) => raw == null
+      ? _prefs.remove(_stripePaymentsKey)
+      : _prefs.setString(_stripePaymentsKey, raw);
+
+  /// When the Stripe key was last entered or removed (on either device),
+  /// so the newer one wins when syncing.
+  DateTime? get stripeKeyChangedAt {
+    final raw = _prefs.getString(_stripeKeyChangedKey);
+    return raw == null ? null : DateTime.parse(raw);
+  }
+
+  Future<void> setStripeKeyChangedAt(DateTime? at) => at == null
+      ? _prefs.remove(_stripeKeyChangedKey)
+      : _prefs.setString(_stripeKeyChangedKey, at.toUtc().toIso8601String());
 
   static const _calendarsShownKey = 'calendars_shown_v1';
 
@@ -197,20 +233,78 @@ class LocalStore {
   Future<void> setCalendarsShownRaw(String raw) =>
       _prefs.setString(_calendarsShownKey, raw);
 
-  static const _signedDocsKey = 'signed_docs_v1';
-  static const _signedDocDecisionsKey = 'signed_doc_decisions_v1';
+  static const _signaturesKey = 'policy_signatures_v1';
+  static const _signatureDecisionsKey = 'policy_signature_decisions_v1';
 
-  /// Signed policy PDFs last found in Drive (JSON).
-  String? get signedDocsRaw => _prefs.getString(_signedDocsKey);
+  /// Policies form responses as last read from the spreadsheet (JSON).
+  String? get policySignaturesRaw => _prefs.getString(_signaturesKey);
 
-  Future<void> setSignedDocsRaw(String raw) =>
-      _prefs.setString(_signedDocsKey, raw);
+  Future<void> setPolicySignaturesRaw(String raw) =>
+      _prefs.setString(_signaturesKey, raw);
 
-  /// Which client each signed doc belongs to, as synced (JSON).
-  String? get signedDocDecisionsRaw => _prefs.getString(_signedDocDecisionsKey);
+  /// Whose each policies form response is, as synced (JSON).
+  String? get signatureDecisionsRaw => _prefs.getString(_signatureDecisionsKey);
 
-  Future<void> setSignedDocDecisionsRaw(String raw) =>
-      _prefs.setString(_signedDocDecisionsKey, raw);
+  Future<void> setSignatureDecisionsRaw(String raw) =>
+      _prefs.setString(_signatureDecisionsKey, raw);
+
+  static const _dataAccountKey = 'data_account_v1';
+
+  /// The Google account this device's data and spreadsheet belong to (the
+  /// last one signed in), or null if none yet.
+  String? get dataAccount => _prefs.getString(_dataAccountKey);
+
+  Future<void> setDataAccount(String email) =>
+      _prefs.setString(_dataAccountKey, email);
+
+  /// Forgets everything tied to the Google account in use: its
+  /// spreadsheet, form responses (leads, Dunn Club sign-ups), signed docs,
+  /// calendars, the Stripe connection and the other device's sessions. Unless [keepData], also
+  /// erases clients, trips, sessions, payments and expenses. Kept either
+  /// way: home address, donation centers, the Maps API key and this
+  /// device's own preferences.
+  Future<void> forgetAccount({required bool keepData}) async {
+    final settings = loadSettings();
+    await saveSettings(
+      AppSettings(
+        home: settings.home,
+        navApp: settings.navApp,
+        ratePerMile: settings.ratePerMile,
+        bookingUrl: settings.bookingUrl,
+        changedAt: {...settings.changedAt}..remove(SyncedField.spreadsheetId),
+      ),
+    );
+    for (final key in [
+      _dataAccountKey,
+      _styledSheetKey,
+      _pendingDeletesKey,
+      _otherJobsKey,
+      _leadsKey,
+      _leadStatesKey,
+      _calendarsShownKey,
+      _signaturesKey,
+      _signatureDecisionsKey,
+      _stripePaymentsKey,
+      _stripeKeyChangedKey,
+      stripeDecisionsKey,
+      clubRegistrationsKey,
+      clubDecisionsKey,
+      recordsSheetKey,
+      ledgerWrittenKey,
+      if (!keepData) ...[
+        _addressesKey,
+        _clientDeletionsKey,
+        _tripsKey,
+        _jobsKey,
+        _lastStopKey,
+        _lastDepartureKey,
+        manualPaymentsKey,
+        expensesKey,
+      ],
+    ]) {
+      await _prefs.remove(key);
+    }
+  }
 
   Map<String, double>? _distanceCache;
 

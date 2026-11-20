@@ -5,7 +5,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../services/jobs.dart';
 import '../../state/providers.dart';
 import '../../widgets/page_body.dart';
-import '../policy_docs/signed_docs_page.dart';
+import '../payments/stripe_page.dart';
+import '../policy_forms/policy_forms_page.dart';
 import '../log_trip/log_trip_screen.dart';
 import '../../widgets/place_dialog.dart';
 
@@ -72,10 +73,12 @@ class SettingsScreen extends ConsumerWidget {
             section('Business records'),
             const _RecordsSection(),
           ],
-          if (ref.watch(googleAccountServiceProvider) != null) ...[
-            section('Policy docs'),
-            const PolicyDocsSettings(),
+          if (ref.watch(settingsProvider).spreadsheetId != null) ...[
+            section('Policies forms'),
+            const PolicyFormsSettings(),
           ],
+          section('Stripe'),
+          const StripeSettings(),
           section('Starting point'),
           ListTile(
             leading: home == null || home.isVerified
@@ -342,6 +345,17 @@ class _GoogleAccountSection extends ConsumerWidget {
                     ),
                   const Spacer(),
                   TextButton(
+                    onPressed: () async {
+                      final keepData = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => _SwitchAccountDialog(email: sync.email),
+                      );
+                      if (keepData == null) return;
+                      await notifier.switchAccount(keepData: keepData);
+                    },
+                    child: const Text('Switch account'),
+                  ),
+                  TextButton(
                     onPressed: notifier.signOut,
                     child: const Text('Sign out'),
                   ),
@@ -351,6 +365,94 @@ class _GoogleAccountSection extends ConsumerWidget {
           ],
         );
     }
+  }
+}
+
+/// Asks whether to start fresh or bring this device's data to the new
+/// account. Returns keepData, or null if cancelled.
+class _SwitchAccountDialog extends StatefulWidget {
+  const _SwitchAccountDialog({this.email});
+
+  final String? email;
+
+  @override
+  State<_SwitchAccountDialog> createState() => _SwitchAccountDialogState();
+}
+
+class _SwitchAccountDialogState extends State<_SwitchAccountDialog> {
+  bool? _keepData;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final old = widget.email ?? 'this account';
+    return AlertDialog(
+      title: const Text('Switch Google account'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'You\'ll sign out of $old and pick another account, which '
+              'gets its own business records spreadsheet. Nothing in '
+              '$old\'s Drive or spreadsheet is changed.',
+            ),
+            const SizedBox(height: 12),
+            RadioGroup<bool>(
+              groupValue: _keepData,
+              onChanged: (v) => setState(() => _keepData = v),
+              child: const Column(
+                children: [
+                  RadioListTile<bool>(
+                    value: false,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Start fresh'),
+                    subtitle: Text(
+                      'Erase clients, trips, sessions, payments and expenses '
+                      'on this device. For moving from a test account to '
+                      'the real one.',
+                    ),
+                  ),
+                  RadioListTile<bool>(
+                    value: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Bring this device\'s data'),
+                    subtitle: Text(
+                      'Copy clients, trips, sessions, payments and expenses '
+                      'into the new account.',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Kept either way: home address, donation centers and the Maps '
+              'API key. Leads, Dunn Club sign-ups, signed policy docs and '
+              'Calendar come from the new account: link its forms, and '
+              'connect Drive and Calendar again. Do this on your phone and '
+              'your Mac.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _keepData == null
+              ? null
+              : () => Navigator.pop(context, _keepData),
+          child: Text(
+            _keepData == false ? 'Erase and switch' : 'Switch account',
+          ),
+        ),
+      ],
+    );
   }
 }
 

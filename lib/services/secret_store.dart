@@ -9,6 +9,13 @@ abstract class SecretStore {
   /// Saves the key, or removes it when [key] is null or blank.
   Future<void> setApiKey(String? key);
 
+  /// The Stripe restricted (read-only) key, as loaded at startup (or last
+  /// saved).
+  String? get stripeKey;
+
+  /// Saves the Stripe key, or removes it when [key] is null or blank.
+  Future<void> setStripeKey(String? key);
+
   Future<String?> read(String name);
 
   /// Writes [value], or deletes the entry when [value] is null.
@@ -17,12 +24,14 @@ abstract class SecretStore {
 
 /// Android Keystore / macOS Keychain, via flutter_secure_storage.
 class SecureSecretStore implements SecretStore {
-  SecureSecretStore._(this._storage, this._apiKey);
+  SecureSecretStore._(this._storage, this._apiKey, this._stripeKey);
 
   static const _apiKeyName = 'google_maps_api_key';
+  static const _stripeKeyName = 'stripe_restricted_key';
 
   final FlutterSecureStorage _storage;
   String? _apiKey;
+  String? _stripeKey;
 
   static Future<SecureSecretStore> load() async {
     // On macOS, use the regular login keychain. The default "data
@@ -31,14 +40,31 @@ class SecureSecretStore implements SecretStore {
     const storage = FlutterSecureStorage(
       mOptions: MacOsOptions(usesDataProtectionKeychain: false),
     );
-    String? key;
-    try {
-      key = await storage.read(key: _apiKeyName);
-    } catch (_) {
-      // Unreadable keychain entry: treat as not set; the user can re-enter it.
-      key = null;
+    // Unreadable keychain entries: treat as not set; they can be re-entered.
+    Future<String?> load(String name) async {
+      try {
+        return await storage.read(key: name);
+      } catch (_) {
+        return null;
+      }
     }
-    return SecureSecretStore._(storage, key);
+
+    return SecureSecretStore._(
+      storage,
+      await load(_apiKeyName),
+      await load(_stripeKeyName),
+    );
+  }
+
+  @override
+  String? get stripeKey => _stripeKey;
+
+  @override
+  Future<void> setStripeKey(String? key) async {
+    final trimmed = key?.trim();
+    final value = (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+    await write(_stripeKeyName, value);
+    _stripeKey = value;
   }
 
   @override
@@ -71,7 +97,17 @@ class SecureSecretStore implements SecretStore {
 class MemorySecretStore implements SecretStore {
   MemorySecretStore([this._apiKey]);
   String? _apiKey;
+  String? _stripeKey;
   final Map<String, String> _values = {};
+
+  @override
+  String? get stripeKey => _stripeKey;
+
+  @override
+  Future<void> setStripeKey(String? key) async {
+    final trimmed = key?.trim();
+    _stripeKey = (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+  }
 
   @override
   String? get apiKey => _apiKey;

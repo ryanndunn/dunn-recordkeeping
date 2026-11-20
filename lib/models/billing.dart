@@ -32,6 +32,7 @@ class SessionBilling {
     this.method,
     this.paidOn,
     this.amount,
+    this.stripeId,
   });
 
   /// A session nothing has been recorded for.
@@ -47,12 +48,17 @@ class SessionBilling {
   final DateTime? paidOn;
   final double? amount;
 
+  /// The Stripe payment that paid it (a Checkout Session ID), if it was
+  /// matched from Stripe. Only while paid.
+  final String? stripeId;
+
   Map<String, dynamic> toJson() => {
     'status': status.name,
     if (status == BillingStatus.paid) ...{
       if (method != null) 'method': method!.name,
       if (paidOn != null) 'paidOn': dateOnly(paidOn!),
       if (amount != null) 'amount': amount,
+      if (stripeId != null) 'stripeId': stripeId,
     },
   };
 
@@ -69,6 +75,7 @@ class SessionBilling {
         ? null
         : DateTime.parse(json['paidOn'] as String),
     amount: (json['amount'] as num?)?.toDouble(),
+    stripeId: json['stripeId'] as String?,
   );
 
   @override
@@ -77,10 +84,11 @@ class SessionBilling {
       other.status == status &&
       other.method == method &&
       other.paidOn == paidOn &&
-      other.amount == amount;
+      other.amount == amount &&
+      other.stripeId == stripeId;
 
   @override
-  int get hashCode => Object.hash(status, method, paidOn, amount);
+  int get hashCode => Object.hash(status, method, paidOn, amount, stripeId);
 }
 
 String _two(int n) => n.toString().padLeft(2, '0');

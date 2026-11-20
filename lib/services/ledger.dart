@@ -1,15 +1,30 @@
 import '../models/lead.dart';
 import '../models/money.dart';
 import '../models/saved_address.dart';
+import 'policy_forms.dart' show isPolicyFormHeader;
+import 'stripe.dart';
 
 String _two(int n) => n.toString().padLeft(2, '0');
+String _dollars(double v) => '\$${v.toStringAsFixed(2)}';
 String _short(DateTime d) =>
     '${_two(d.month)}/${_two(d.day)}/${_two(d.year % 100)}';
 
 // ----------------------------------------------------------------- forms
 
+/// Which form a responses tab (by its header) belongs to.
+enum FormKind { contact, policy, club }
+
+/// Policies forms ask for a typed signature; the website contact form asks
+/// for a phone number and what they need; any other form is the Dunn Club
+/// sign-up.
+FormKind formKindOf(List<String> header) => isPolicyFormHeader(header)
+    ? FormKind.policy
+    : isContactFormHeader(header)
+    ? FormKind.contact
+    : FormKind.club;
+
 /// True for the website contact form's responses (it asks for a phone
-/// number and what they need); other form tabs are Dunn Club sign-ups.
+/// number and what they need).
 bool isContactFormHeader(List<String> header) {
   final h = [for (final x in header) x.toLowerCase()];
   return h.any((x) => x.contains('phone') || x.contains('help'));
@@ -99,18 +114,34 @@ List<Lead> clubLeads(List<ClubRegistration> regs, List<SavedAddress> clients) {
 // -------------------------------------------------------------- payments
 
 /// Every payment received: sessions marked paid on client pages, Dunn
-/// Club sign-ups marked paid, and payments entered by hand. Newest first.
+/// Club sign-ups marked paid, payments entered by hand, and Stripe
+/// payments. Newest first. A session paid through Stripe is counted once,
+/// as the Stripe payment.
 List<LedgerPayment> allPayments({
   required List<SavedAddress> clients,
   required List<ManualPayment> manual,
   required List<ClubRegistration> registrations,
   required Map<String, ClubDecision> clubDecisions,
+  List<StripePayment> stripe = const [],
+  Map<String, StripeDecision> stripeDecisions = const {},
 }) {
   final out = <LedgerPayment>[];
+  final byId = {for (final c in clients) c.id: c};
+  final stripeIds = {for (final p in stripe) p.id};
+  // Sessions a Stripe payment here already counts.
+  final viaStripe = {
+    for (final e in stripeDecisions.entries)
+      if (stripeIds.contains(e.key) && e.value.forSession)
+        '${e.value.clientId}:${e.value.sessionKey}',
+  };
   for (final c in clients) {
     for (final e in c.billing.entries) {
       final b = e.value;
       if (b.status != BillingStatus.paid) continue;
+      if (viaStripe.contains('${c.id}:${e.key}') ||
+          stripeIds.contains(b.stripeId)) {
+        continue;
+      }
       final booked = c.scheduled.where((s) => s.id == e.key).firstOrNull;
       final day = _dayKey(e.key);
       final sessionDay = booked?.start ?? day;
@@ -147,6 +178,43 @@ List<LedgerPayment> allPayments({
       ),
     );
   }
+  for (final p in stripe) {
+    if (p.fullyRefunded) continue;
+    final d = stripeDecisions[p.id];
+    final client = byId[d?.clientId];
+    final forSession = d?.forSession ?? false;
+    final booked = forSession
+        ? client?.scheduled.where((s) => s.id == d!.sessionKey).firstOrNull
+        : null;
+    final sessionDay = forSession
+        ? booked?.start ?? _dayKey(d!.sessionKey!)
+        : null;
+    final local = p.at.toLocal();
+    out.add(
+      LedgerPayment(
+        id: 'stripe:${p.id}',
+        kind: PaymentKind.stripe,
+        date: DateTime(local.year, local.month, local.day),
+        amount: p.net,
+        source: forSession ? IncomeSource.session : IncomeSource.other,
+        from: client?.name ?? p.who,
+        description: forSession
+            ? sessionDay == null
+                  ? 'Session (Stripe)'
+                  : 'Session ${_short(sessionDay)} (Stripe)'
+            : d == null
+            ? 'Stripe payment, not matched yet'
+            : 'Stripe payment',
+        method: p.method,
+        notes: [
+          if (p.fee > 0) 'Stripe fee ${_dollars(p.fee)}',
+          if (p.refunded > 0)
+            'Refunded ${_dollars(p.refunded)} of ${_dollars(p.amount)}',
+        ].join('; '),
+        clientId: client?.id,
+      ),
+    );
+  }
   for (final m in manual) {
     out.add(
       LedgerPayment(
@@ -162,7 +230,11 @@ List<LedgerPayment> allPayments({
       ),
     );
   }
-  out.sort((a, b) => b.date.compareTo(a.date));
+  // Same day: a fixed order, so both devices (and the sheet) agree.
+  out.sort((a, b) {
+    final byDate = b.date.compareTo(a.date);
+    return byDate != 0 ? byDate : b.id.compareTo(a.id);
+  });
   return out;
 }
 
@@ -197,11 +269,19 @@ double? irsRateOn(DateTime date) {
 
 // ----------------------------------------------------------- spreadsheet
 
+/// Oldest first; the same day in a fixed order (by ID).
+int _oldestFirst(DateTime a, String aId, DateTime b, String bId) {
+  final byDate = a.compareTo(b);
+  return byDate != 0 ? byDate : aId.compareTo(bId);
+}
+
 String _iso(DateTime d) => '${d.year}-${_two(d.month)}-${_two(d.day)}';
 
 /// Payments tab rows (see `paymentHeaders`), oldest first.
 List<List<Object>> paymentRows(List<LedgerPayment> payments) => [
-  for (final p in [...payments]..sort((a, b) => a.date.compareTo(b.date)))
+  for (final p in [
+    ...payments,
+  ]..sort((a, b) => _oldestFirst(a.date, a.id, b.date, b.id)))
     [
       _iso(p.date),
       p.from,
@@ -216,7 +296,9 @@ List<List<Object>> paymentRows(List<LedgerPayment> payments) => [
 
 /// Expenses tab rows (see `expenseHeaders`), oldest first.
 List<List<Object>> expenseRows(List<Expense> expenses) => [
-  for (final e in [...expenses]..sort((a, b) => a.date.compareTo(b.date)))
+  for (final e in [
+    ...expenses,
+  ]..sort((a, b) => _oldestFirst(a.date, a.id, b.date, b.id)))
     [
       _iso(e.date),
       e.vendor,

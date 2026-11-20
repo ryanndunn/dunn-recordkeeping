@@ -7,10 +7,12 @@ import '../../models/money.dart';
 import '../../services/ledger.dart';
 import '../../state/money_provider.dart';
 import '../../state/providers.dart';
+import '../../state/stripe_provider.dart';
 import '../../widgets/page_body.dart';
 import '../../widgets/payment_fields.dart';
 import '../clients/client_page.dart';
 import '../clients/client_status.dart';
+import 'stripe_page.dart';
 
 const _uuid = Uuid();
 
@@ -75,6 +77,14 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
             .where((r) => r.id == regId)
             .firstOrNull;
         if (reg != null) await showClubDialog(context, reg);
+      case PaymentKind.stripe:
+        final id = p.id.substring('stripe:'.length);
+        final payment = ref
+            .read(stripeProvider)
+            .payments
+            .where((x) => x.id == id)
+            .firstOrNull;
+        if (payment != null) await showStripePayment(context, ref, payment);
       case PaymentKind.manual:
         final m = ref
             .read(manualPaymentsProvider)
@@ -92,7 +102,7 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final ledger = ref.watch(ledgerProvider);
-    final expenses = ref.watch(expensesProvider);
+    final expenses = ref.watch(allExpensesProvider);
     final trips = ref.watch(tripsProvider);
     final toConfirm = ref.watch(clubToConfirmProvider);
     final now = ref.read(clockProvider)();
@@ -242,14 +252,24 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
                       label: const Text('Add Dunn Club sign-ups'),
                     ),
             ),
+          const StripeBanner(),
           const SizedBox(height: 12),
           if (_expenses)
             _ExpenseTable(
               expenses: spent,
-              onTap: (e) => showDialog<void>(
-                context: context,
-                builder: (_) => _ExpenseDialog(existing: e),
-              ),
+              onTap: (e) => e.id.startsWith('stripefees:')
+                  ? ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Stripe\'s fees for the month, added up from your '
+                          'Stripe payments. They update on their own.',
+                        ),
+                      ),
+                    )
+                  : showDialog<void>(
+                      context: context,
+                      builder: (_) => _ExpenseDialog(existing: e),
+                    ),
             )
           else
             _PaymentTable(payments: payments, onTap: _openPayment),

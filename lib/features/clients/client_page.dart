@@ -16,8 +16,9 @@ import '../../widgets/client_dialog.dart' show looksLikeEmail;
 import '../../widgets/page_body.dart';
 import '../../widgets/payment_fields.dart';
 import '../../services/client_jobs.dart';
-import '../../services/policy_docs.dart' show SignedDoc;
-import '../policy_docs/signed_docs_page.dart';
+import '../../services/policy_forms.dart' show PolicyProgress;
+import '../../state/policy_forms_provider.dart';
+import '../policy_forms/policy_forms_page.dart';
 import '../../services/jobs.dart' show formatClock, formatHours;
 import 'client_status.dart';
 
@@ -268,9 +269,26 @@ class _ClientDetails extends ConsumerWidget {
     Future<void> saveAddresses(
       List<ClientLocation> Function(List<ClientLocation> current) edit,
     ) => change((x) => x.withAddresses(edit(x.allAddresses)));
+    // Who needs to sign may have changed: they might be signed now.
+    Future<void> recheckPolicies() =>
+        ref.read(policySignaturesProvider.notifier).recheck(c.id);
     Future<void> saveContacts(
       List<ClientContact> Function(List<ClientContact> current) edit,
-    ) => change((x) => x.copyWith(contacts: edit(x.contacts)));
+    ) async {
+      await change((x) => x.copyWith(contacts: edit(x.contacts)));
+      await recheckPolicies();
+    }
+
+    final progress = ref.watch(policyProgressProvider(c.id));
+    String? policyNote(String? who) {
+      if (!progress.required.contains(who)) return null;
+      final sig = progress.signatures
+          .where((s) => s.contactId == who)
+          .firstOrNull;
+      return sig == null
+          ? 'Needs to sign policies'
+          : 'Signed policies ${formatShortDate(sig.sig.at.toLocal())}';
+    }
 
     final signed = c.policiesSignedOn != null;
     final policyDoc = [
@@ -278,7 +296,7 @@ class _ClientDetails extends ConsumerWidget {
       _PolicyDocCard(
         client: c,
         today: now,
-        signedDoc: signedDocOf(ref, c),
+        progress: progress,
         onSave: (u) => save((_) => u),
       ),
     ];
@@ -313,23 +331,29 @@ class _ClientDetails extends ConsumerWidget {
               _ContactRow(
                 key: ValueKey('contact-primary-${c.id}'),
                 contact: c.primaryContact,
-                onSave: (updated) => save(
-                  (x) => x.copyWith(
-                    name: updated.name,
-                    phone: updated.phone,
-                    email: updated.email,
-                    // "Primary" is the default, so it isn't stored.
-                    contactLabel: updated.label == 'Primary'
-                        ? ''
-                        : updated.label,
-                  ),
-                ),
+                policyNote: policyNote(null),
+                onSave: (updated) async {
+                  await save(
+                    (x) => x.copyWith(
+                      name: updated.name,
+                      phone: updated.phone,
+                      email: updated.email,
+                      // "Primary" is the default, so it isn't stored.
+                      contactLabel: updated.label == 'Primary'
+                          ? ''
+                          : updated.label,
+                      primarySigns: updated.signsPolicies,
+                    ),
+                  );
+                  await recheckPolicies();
+                },
               ),
               for (final p in c.contacts) ...[
                 const Divider(height: 1),
                 _ContactRow(
                   key: ValueKey('contact-${p.id}'),
                   contact: p,
+                  policyNote: policyNote(p.id),
                   onSave: (updated) => saveContacts(
                     (all) => [for (final x in all) x.id == p.id ? updated : x],
                   ),
@@ -773,7 +797,8 @@ class _NotesFieldState extends State<_NotesField> {
   );
 }
 
-/// Whether (and when) the client signed the policies document. Marking it
+/// Whether (and when) the client signed the policies: the policies forms
+/// they (and whoever pays) filled in, and what's still missing. Marking it
 /// signed makes the client active; marking it not signed puts an active
 /// client back to waiting on the policy doc. Archived clients stay
 /// archived.
@@ -781,14 +806,14 @@ class _PolicyDocCard extends StatelessWidget {
   const _PolicyDocCard({
     required this.client,
     required this.today,
+    required this.progress,
     required this.onSave,
-    this.signedDoc,
   });
 
   final SavedAddress client;
 
-  /// The signed PDF found in Drive for this client, if any.
-  final SignedDoc? signedDoc;
+  /// The policies forms matched to this client.
+  final PolicyProgress progress;
   final DateTime today;
   final Future<void> Function(SavedAddress updated) onSave;
 
@@ -821,69 +846,120 @@ class _PolicyDocCard extends StatelessWidget {
     ),
   );
 
+  /// What's still missing, if anything: a form from each person who needs
+  /// to sign, and one agreeing to pay.
+  String? get _waitingOn {
+    if (progress.signatures.isEmpty) return null;
+    final parts = [
+      for (final m in progress.missing) signerName(client, m),
+      if (!progress.paymentSigned) 'someone agreeing to pay',
+    ];
+    if (parts.isEmpty) return null;
+    return parts.length == 1
+        ? parts.single
+        : '${parts.sublist(0, parts.length - 1).join(', ')} and ${parts.last}';
+  }
+
+  /// Who needs to sign, before anyone has.
+  String get _whoSigns {
+    final names = [for (final r in progress.required) signerName(client, r)];
+    return names.isEmpty
+        ? 'Nobody is marked as needing to sign (see Contacts)'
+        : 'To sign: ${names.join(', ')}';
+  }
+
+  /// One line per form signed: who, which form, when. Tapping opens the
+  /// answers.
+  List<Widget> _signatures(BuildContext context) => [
+    for (final s in progress.signatures)
+      ListTile(
+        dense: true,
+        contentPadding: const EdgeInsets.only(left: 72, right: 16),
+        leading: Icon(
+          s.sig.includesPayment
+              ? Icons.request_quote_outlined
+              : Icons.how_to_reg,
+          size: 20,
+        ),
+        title: Text(signerName(client, s.contactId)),
+        subtitle: Text(
+          '${formLabel(s.sig)} · ${formatShortDate(s.sig.at.toLocal())}',
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => showSignatureAnswers(context, s.sig),
+      ),
+  ];
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final signed = client.policiesSignedOn;
     if (signed == null) {
+      final waiting = _waitingOn;
       return Card.outlined(
         margin: EdgeInsets.zero,
-        child: ListTile(
-          leading: const Icon(Icons.edit_document),
-          title: const Text('Not signed yet'),
-          subtitle: Text(
-            [
-              if (client.consultationOn != null)
-                'Consultation ${formatShortDate(client.consultationOn!)}',
-              _archived
-                  ? 'Signing won\'t change the archived status.'
-                  : 'Signing makes the client active.',
-            ].join(' · '),
-          ),
-          trailing: FilledButton(
-            onPressed: () => _pickSignedDay(context),
-            child: const Text('Mark signed'),
-          ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_document),
+              title: Text(
+                waiting == null ? 'Not signed yet' : 'Waiting on $waiting',
+              ),
+              subtitle: Text(
+                [
+                  if (client.consultationOn != null)
+                    'Consultation ${formatShortDate(client.consultationOn!)}',
+                  if (progress.signatures.isEmpty) _whoSigns,
+                  _archived
+                      ? 'Signing won\'t change the archived status.'
+                      : 'Marked signed when the policies form is in.',
+                ].join(' · '),
+              ),
+              trailing: FilledButton(
+                onPressed: () => _pickSignedDay(context),
+                child: const Text('Mark signed'),
+              ),
+            ),
+            ..._signatures(context),
+          ],
         ),
       );
     }
+    final rate = progress.rate;
     return Card.outlined(
       margin: EdgeInsets.zero,
       clipBehavior: Clip.antiAlias,
-      child: ListTile(
-        onTap: () => _pickSignedDay(context),
-        leading: Icon(Icons.verified_outlined, color: scheme.primary),
-        title: Text('Signed ${formatShortDate(signed)}'),
-        subtitle: Text(
-          signedDoc == null
-              ? 'Tap to change the date'
-              : 'Signed copy in Drive: ${signedDoc!.name}',
-        ),
-        trailing: PopupMenuButton<String>(
-          tooltip: 'Policy doc options',
-          onSelected: (choice) {
-            if (choice == 'open') {
-              openClientLink(context, signedDocUri(signedDoc!));
-            }
-            if (choice == 'date') _pickSignedDay(context);
-            if (choice == 'unsign') _unsign();
-          },
-          itemBuilder: (_) => [
-            if (signedDoc != null)
-              const PopupMenuItem(
-                value: 'open',
-                child: Text('Open the signed PDF'),
-              ),
-            const PopupMenuItem(
-              value: 'date',
-              child: Text('Change signed date'),
+      child: Column(
+        children: [
+          ListTile(
+            onTap: () => _pickSignedDay(context),
+            leading: Icon(Icons.verified_outlined, color: scheme.primary),
+            title: Text('Signed ${formatShortDate(signed)}'),
+            subtitle: Text(
+              progress.signatures.isEmpty
+                  ? 'Tap to change the date'
+                  : rate == null
+                  ? 'Signed with the policies form'
+                  : 'Agreed to ${hourlyRateText(rate)}',
             ),
-            const PopupMenuItem(
-              value: 'unsign',
-              child: Text('Mark as not signed'),
+            trailing: PopupMenuButton<String>(
+              tooltip: 'Policy doc options',
+              onSelected: (choice) {
+                if (choice == 'date') _pickSignedDay(context);
+                if (choice == 'unsign') _unsign();
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'date', child: Text('Change signed date')),
+                PopupMenuItem(
+                  value: 'unsign',
+                  child: Text('Mark as not signed'),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+          ..._signatures(context),
+        ],
       ),
     );
   }
@@ -1041,11 +1117,15 @@ class _ContactRow extends StatefulWidget {
     required this.contact,
     required this.onSave,
     this.onRemove,
+    this.policyNote,
   });
 
   final ClientContact contact;
   final Future<void> Function(ClientContact updated) onSave;
   final Future<void> Function()? onRemove;
+
+  /// "Needs to sign policies" or "Signed policies …", if they sign them.
+  final String? policyNote;
 
   @override
   State<_ContactRow> createState() => _ContactRowState();
@@ -1075,6 +1155,8 @@ class _ContactRowState extends State<_ContactRow> {
     }
     final theme = Theme.of(context);
     final details = [p.phone, p.email].where((x) => x.isNotEmpty).join('\n');
+    final note = widget.policyNote;
+    final signed = note != null && note.startsWith('Signed');
     return ListTile(
       onTap: () => setState(() => _editing = true),
       leading: const Icon(Icons.person_outline),
@@ -1099,11 +1181,42 @@ class _ContactRowState extends State<_ContactRow> {
           ],
         ],
       ),
-      subtitle: Text(
-        details.isEmpty ? 'Tap to add a phone number or email' : details,
-        style: details.isEmpty
-            ? TextStyle(color: theme.colorScheme.onSurfaceVariant)
-            : null,
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            details.isEmpty ? 'Tap to add a phone number or email' : details,
+            style: details.isEmpty
+                ? TextStyle(color: theme.colorScheme.onSurfaceVariant)
+                : null,
+          ),
+          if (note != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(
+                children: [
+                  Icon(
+                    signed ? Icons.verified_outlined : Icons.edit_document,
+                    size: 16,
+                    color: signed
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.tertiary,
+                  ),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: Text(
+                      note,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: signed
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.tertiary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1195,6 +1308,7 @@ class _ContactEditorState extends State<_ContactEditor> {
   late final _phone = TextEditingController(text: widget.initial?.phone ?? '');
   late final _email = TextEditingController(text: widget.initial?.email ?? '');
   late final _label = TextEditingController(text: widget.initial?.label ?? '');
+  late bool _signs = widget.initial?.signsPolicies ?? false;
   String? _emailError;
 
   @override
@@ -1222,6 +1336,7 @@ class _ContactEditorState extends State<_ContactEditor> {
             phone: phone,
             email: email,
             label: label,
+            signsPolicies: _signs,
           ) ??
           ClientContact(
             id: _uuid.v4(),
@@ -1229,6 +1344,7 @@ class _ContactEditorState extends State<_ContactEditor> {
             phone: phone,
             email: email,
             label: label,
+            signsPolicies: _signs,
           ),
     );
   }
@@ -1317,7 +1433,17 @@ class _ContactEditorState extends State<_ContactEditor> {
               if (_emailError != null) setState(() => _emailError = null);
             },
           ),
-          const SizedBox(height: 4),
+          CheckboxListTile(
+            value: _signs,
+            onChanged: (v) => setState(() => _signs = v ?? false),
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('Needs to sign policies'),
+            subtitle: const Text(
+              'The client is marked signed once everyone checked has '
+              'signed a policies form.',
+            ),
+          ),
           Row(
             children: [
               if (widget.onRemove != null)
@@ -2091,6 +2217,8 @@ class _BillingDialogState extends State<_BillingDialog> {
                             _paid.date.day,
                           ),
                           amount: _paid.amount,
+                          // Still the Stripe payment it was matched to.
+                          stripeId: widget.initial.stripeId,
                         )
                       : SessionBilling(status: _status),
                 ),

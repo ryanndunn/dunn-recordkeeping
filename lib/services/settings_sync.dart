@@ -8,7 +8,7 @@ import '../models/job.dart';
 import '../models/lead.dart';
 import '../models/place.dart';
 import '../models/saved_address.dart';
-import 'policy_docs.dart';
+import 'policy_forms.dart';
 
 /// One synced setting: its value (as JSON) and when it was last changed.
 class SyncField {
@@ -44,7 +44,6 @@ SyncDoc docFromLocal(AppSettings s, String? apiKey) {
     SyncedField.spreadsheetId: s.spreadsheetId,
     SyncedField.apiKey: apiKey,
     SyncedField.bookingUrl: s.bookingUrl,
-    SyncedField.policyDocName: s.policyDocName,
   };
   final doc = <String, SyncField>{};
   for (final field in SyncedField.all) {
@@ -95,7 +94,6 @@ bool docsEqual(SyncDoc a, SyncDoc b) =>
           ratePerMile: s.ratePerMile,
           spreadsheetId: s.spreadsheetId,
           bookingUrl: s.bookingUrl,
-          policyDocName: s.policyDocName,
         );
       case SyncedField.navApp:
         s = s.copyWith(
@@ -115,10 +113,7 @@ bool docsEqual(SyncDoc a, SyncDoc b) =>
           ratePerMile: s.ratePerMile,
           spreadsheetId: v as String?,
           bookingUrl: s.bookingUrl,
-          policyDocName: s.policyDocName,
         );
-      case SyncedField.policyDocName:
-        if (v is String) s = s.copyWith(policyDocName: v);
       case SyncedField.bookingUrl:
         s = v == null
             ? s.copyWith(clearBookingUrl: true)
@@ -316,30 +311,33 @@ Map<String, ({LeadState state, DateTime at})> leadStatesFromDoc(
       ),
 };
 
-// ------------------------------------------------- signed policy docs
+// ------------------------------------------------- policy signatures
 //
-// Which client each signed policy PDF belongs to, keyed
-// "signeddoc:<Drive file ID>". The newer change wins.
+// Whose each policies form response is, keyed "policysig:<response ID>".
+// The newer change wins.
 
-const signedDocPrefix = 'signeddoc:';
+const signaturePrefix = 'policysig:';
 
-SyncDoc signedDocDecisionDoc(
-  Map<String, ({SignedDocDecision decision, DateTime at})> decisions,
+/// The Stripe restricted key, synced like the Maps key (newest wins).
+const stripeKeyField = 'stripeKey';
+
+SyncDoc signatureDecisionDoc(
+  Map<String, ({SignatureDecision decision, DateTime at})> decisions,
 ) => {
   for (final e in decisions.entries)
-    '$signedDocPrefix${e.key}': SyncField(
+    '$signaturePrefix${e.key}': SyncField(
       e.value.decision.toJson(),
       e.value.at.toUtc(),
     ),
 };
 
-Map<String, ({SignedDocDecision decision, DateTime at})>
-signedDocDecisionsFromDoc(SyncDoc doc) => {
+Map<String, ({SignatureDecision decision, DateTime at})>
+signatureDecisionsFromDoc(SyncDoc doc) => {
   for (final e in doc.entries)
-    if (e.key.startsWith(signedDocPrefix) &&
+    if (e.key.startsWith(signaturePrefix) &&
         e.value.value is Map<String, dynamic>)
-      e.key.substring(signedDocPrefix.length): (
-        decision: SignedDocDecision.fromJson(
+      e.key.substring(signaturePrefix.length): (
+        decision: SignatureDecision.fromJson(
           e.value.value as Map<String, dynamic>,
         ),
         at: e.value.at,

@@ -5,8 +5,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/lead.dart';
 import '../models/money.dart';
 import '../services/ledger.dart';
+import '../services/local_store.dart';
 import '../services/settings_sync.dart';
+import '../services/stripe.dart';
 import 'leads_provider.dart';
+import 'stripe_provider.dart';
 import 'providers.dart';
 
 /// Records by ID, each with when it last changed. A null value is a
@@ -90,7 +93,7 @@ class ManualPaymentsNotifier extends SyncedRecordsNotifier {
   @override
   String get prefix => 'payment:';
   @override
-  String get storeKey => 'manual_payments_v1';
+  String get storeKey => LocalStore.manualPaymentsKey;
 
   Future<void> save(ManualPayment p) => put(p.id, p.toJson());
 }
@@ -99,7 +102,7 @@ class ExpensesNotifier extends SyncedRecordsNotifier {
   @override
   String get prefix => 'expense:';
   @override
-  String get storeKey => 'expenses_v1';
+  String get storeKey => LocalStore.expensesKey;
 
   Future<void> save(Expense e) => put(e.id, e.toJson());
 }
@@ -108,7 +111,7 @@ class ClubDecisionsNotifier extends SyncedRecordsNotifier {
   @override
   String get prefix => 'clubreg:';
   @override
-  String get storeKey => 'club_decisions_v1';
+  String get storeKey => LocalStore.clubDecisionsKey;
 
   Future<void> decide(String registrationId, ClubDecision d) =>
       put(registrationId, d.toJson());
@@ -125,10 +128,31 @@ final clubDecisionRecordsProvider =
     NotifierProvider<ClubDecisionsNotifier, Records>(ClubDecisionsNotifier.new);
 
 /// Everything above, for syncing.
+/// What each Stripe payment was for.
+class StripeDecisionsNotifier extends SyncedRecordsNotifier {
+  @override
+  String get prefix => 'stripe:';
+  @override
+  String get storeKey => LocalStore.stripeDecisionsKey;
+}
+
+final stripeDecisionRecordsProvider =
+    NotifierProvider<StripeDecisionsNotifier, Records>(
+      StripeDecisionsNotifier.new,
+    );
+
+final stripeDecisionsProvider = Provider<Map<String, StripeDecision>>(
+  (ref) => {
+    for (final e in ref.watch(stripeDecisionRecordsProvider).entries)
+      if (e.value.value != null) e.key: StripeDecision.fromJson(e.value.value!),
+  },
+);
+
 final syncedRecordProviders = [
   manualPaymentRecordsProvider,
   expenseRecordsProvider,
   clubDecisionRecordsProvider,
+  stripeDecisionRecordsProvider,
 ];
 
 final manualPaymentsProvider = Provider<List<ManualPayment>>(
@@ -165,7 +189,7 @@ final clubRegistrationsProvider =
 
 /// Sign-ups from the Dunn Club form, as last read from the spreadsheet.
 class ClubRegistrationsNotifier extends Notifier<List<ClubRegistration>> {
-  static const _key = 'club_registrations_v1';
+  static const _key = LocalStore.clubRegistrationsKey;
 
   @override
   List<ClubRegistration> build() {
@@ -204,7 +228,17 @@ final ledgerProvider = Provider<List<LedgerPayment>>(
     manual: ref.watch(manualPaymentsProvider),
     registrations: ref.watch(clubRegistrationsProvider),
     clubDecisions: ref.watch(clubDecisionsProvider),
+    stripe: ref.watch(stripeProvider).payments,
+    stripeDecisions: ref.watch(stripeDecisionsProvider),
   ),
+);
+
+/// Every business expense: entered by hand, plus Stripe's fees by month.
+final allExpensesProvider = Provider<List<Expense>>(
+  (ref) => [
+    ...ref.watch(expensesProvider),
+    ...stripeFeeExpenses(ref.watch(stripeProvider).payments),
+  ],
 );
 
 /// Leads from the website form and from Dunn Club sign-ups.

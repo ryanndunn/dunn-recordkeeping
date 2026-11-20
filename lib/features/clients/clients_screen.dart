@@ -6,7 +6,7 @@ import '../../services/client_list.dart';
 import '../../state/providers.dart';
 import '../../widgets/client_dialog.dart';
 import '../../widgets/page_body.dart';
-import '../policy_docs/signed_docs_page.dart';
+import '../policy_forms/policy_forms_page.dart';
 import 'client_page.dart';
 import 'client_status.dart';
 
@@ -132,7 +132,7 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SignedDocsBanner(),
+          const PolicyFormsBanner(),
           Expanded(
             child: all.isEmpty
                 ? const Padding(
