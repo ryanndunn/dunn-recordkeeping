@@ -13,6 +13,7 @@ import 'features/settings/settings_screen.dart';
 import 'state/leads_provider.dart';
 import 'state/money_provider.dart';
 import 'state/providers.dart';
+import 'state/stripe_provider.dart';
 
 class MileageApp extends StatelessWidget {
   const MileageApp({super.key});
@@ -67,10 +68,15 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         await ref.read(autoTripProvider.notifier).refresh();
         await syncJobWatcher(ref.read(localStoreProvider));
         await ref.read(syncProvider.notifier).syncNow();
+        await ref.read(stripeProvider.notifier).watch();
       },
     );
-    // Arrivals detected while the app is open show up within a minute.
-    _inboxTimer = Timer.periodic(const Duration(minutes: 1), (_) => _catchUp());
+    // Arrivals detected while the app is open show up within a minute, and
+    // bills paid through Stripe within a couple of minutes.
+    _inboxTimer = Timer.periodic(const Duration(minutes: 1), (_) async {
+      await _catchUp();
+      await ref.read(stripeProvider.notifier).watch();
+    });
   }
 
   /// Adds trips and job changes made in the background.
@@ -124,6 +130,23 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   Widget build(BuildContext context) {
     final newLeads = ref.watch(openLeadsProvider).length;
     final toConfirm = ref.watch(clubToConfirmProvider).length;
+    // A bill just paid through Stripe: say so, wherever you are.
+    ref.listen(stripePaidNoticesProvider, (_, notices) {
+      if (notices.isEmpty) return;
+      final messenger = ScaffoldMessenger.of(context);
+      for (final n in notices) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(n),
+            duration: const Duration(seconds: 8),
+            showCloseIcon: true,
+          ),
+        );
+      }
+      Future.microtask(
+        () => ref.read(stripePaidNoticesProvider.notifier).clear(),
+      );
+    });
     return Scaffold(
       body: PopScope(
         canPop: false,
@@ -182,7 +205,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
               label: Text('$toConfirm'),
               child: const Icon(Icons.payments),
             ),
-            label: 'Payments',
+            label: 'Billing',
           ),
           const NavigationDestination(
             icon: Icon(Icons.settings_outlined),

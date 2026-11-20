@@ -91,6 +91,10 @@ final stripeProvider = NotifierProvider<StripeNotifier, StripeState>(
 class StripeNotifier extends Notifier<StripeState> {
   static const refreshEvery = Duration(minutes: 10);
 
+  /// How often Stripe is checked while bills with payment links are out
+  /// (see [watch]).
+  static const watchEvery = Duration(minutes: 2);
+
   @override
   StripeState build() {
     final raw = ref.read(localStoreProvider).stripePaymentsRaw;
@@ -142,6 +146,30 @@ class StripeNotifier extends Notifier<StripeState> {
   Future<void> forgetPayments() async {
     state = const StripeState();
     await ref.read(localStoreProvider).setStripePaymentsRaw(null);
+  }
+
+  /// Some session has a payment link out that hasn't been paid.
+  bool get billsOut => ref
+      .read(addressesProvider)
+      .any(
+        (c) => c.billing.values.any(
+          (b) => b.link != null && b.status != BillingStatus.paid,
+        ),
+      );
+
+  /// Called every minute while the app is open: checks Stripe every
+  /// [watchEvery] while a bill is waiting to be paid, so it's marked paid
+  /// soon after.
+  Future<void> watch() async {
+    if (ref.read(stripeKeyProvider) == null || state.checking || !billsOut) {
+      return;
+    }
+    final last = state.checkedAt;
+    if (last != null &&
+        ref.read(clockProvider)().difference(last) < watchEvery) {
+      return;
+    }
+    await refresh(force: true);
   }
 
   /// Reads new payments (during each sync, or now with [force]).
@@ -227,6 +255,19 @@ class StripeNotifier extends Notifier<StripeState> {
       final fromLink = linkedSession(p, clients, (c) => sessionsOf(c.id));
       if (fromLink != null) {
         await link(p, fromLink.client.id, fromLink.session, automatic: true);
+        // A bill just paid: say so (not for old ones found later).
+        final now = ref.read(clockProvider)();
+        if (now.difference(p.at) < const Duration(days: 7)) {
+          final s = fromLink.session;
+          final d = s.scheduled?.start ?? s.start;
+          ref
+              .read(stripePaidNoticesProvider.notifier)
+              .add(
+                '${fromLink.client.name} paid '
+                '\$${p.net.toStringAsFixed(2)} for the session on '
+                '${d.month}/${d.day} (${p.method.label}). Marked paid.',
+              );
+        }
         continue;
       }
       final who = matchPerson(email: p.email, name: p.name, clients: clients);
@@ -375,6 +416,22 @@ class StripeNotifier extends Notifier<StripeState> {
   Future<void> _decide(String paymentId, StripeDecision d) => ref
       .read(stripeDecisionRecordsProvider.notifier)
       .put(paymentId, d.toJson());
+}
+
+final stripePaidNoticesProvider =
+    NotifierProvider<StripePaidNoticesNotifier, List<String>>(
+      StripePaidNoticesNotifier.new,
+    );
+
+/// Bills just paid through Stripe, to show once ("Jane Smith paid …").
+class StripePaidNoticesNotifier extends Notifier<List<String>> {
+  @override
+  List<String> build() => const [];
+
+  void add(String notice) => state = [...state, notice];
+
+  /// Shown: forget them.
+  void clear() => state = const [];
 }
 
 /// Stripe payments still waiting for you to say what they were for.

@@ -230,3 +230,53 @@ SavedAddress withBilling(
     e.billingKeys.first: billing,
   },
 );
+
+/// One session of one client, with where it is in getting paid.
+class SessionRow {
+  const SessionRow({
+    required this.client,
+    required this.session,
+    required this.billing,
+    this.amount,
+  });
+
+  final SavedAddress client;
+  final ClientJobEntry session;
+  final SessionBilling billing;
+
+  /// What it bills (or was paid), if known.
+  final double? amount;
+
+  BillingStatus get status => billing.status;
+
+  /// The day it was paid, or else the session's day.
+  DateTime get paidDay => billing.paidOn ?? session.start;
+}
+
+/// Every session of every client (as on their pages), with its billing:
+/// to bill and billed oldest first, paid newest first.
+List<SessionRow> allSessions({
+  required List<SavedAddress> clients,
+  required List<JobSummary> jobs,
+  required List<Trip> trips,
+  required DateTime now,
+}) {
+  final rows = [
+    for (final c in clients)
+      for (final e in clientJobs(client: c, jobs: jobs, trips: trips, now: now))
+        SessionRow(
+          client: c,
+          session: e,
+          billing: billingFor(c, e),
+          amount: sessionAmount(c, e),
+        ),
+  ];
+  rows.sort((a, b) {
+    if (a.status != b.status) return a.status.index.compareTo(b.status.index);
+    final byDate = a.status == BillingStatus.paid
+        ? b.paidDay.compareTo(a.paidDay)
+        : a.session.start.compareTo(b.session.start);
+    return byDate != 0 ? byDate : a.client.name.compareTo(b.client.name);
+  });
+  return rows;
+}

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:mileage_log/app.dart';
@@ -406,7 +407,7 @@ void main() {
     tester,
   ) async {
     // A phone-sized screen, tall enough to show the whole page.
-    tester.view.physicalSize = const Size(420, 2000);
+    tester.view.physicalSize = const Size(420, 3200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     await pumpApp(tester, _savedPrefs);
@@ -488,7 +489,7 @@ void main() {
   testWidgets('a client can have more addresses, each its own trip stop', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(420, 2000);
+    tester.view.physicalSize = const Size(420, 3200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     await pumpApp(tester, _savedPrefs, openLogTrip: false);
@@ -669,16 +670,19 @@ void main() {
     );
     await tester.pump(const Duration(seconds: 1));
 
-    // Other clients are in the drawer on a phone-sized window.
-    await tester.tap(find.byTooltip('Other clients'));
+    // Other clients are in the slim sidebar, even on a phone: it slides
+    // out with its button (or on hover) and closes after picking.
+    expect(find.text('Dentist'), findsNothing, reason: 'initials only');
+    await tester.tap(find.byTooltip('Show clients'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Dentist').last);
     await tester.pumpAndSettle();
     expect(find.widgetWithText(AppBar, 'Dentist'), findsOneWidget);
     expect(find.text('Gate code 1234'), findsNothing);
+    expect(find.byTooltip('Show clients'), findsOneWidget, reason: 'closed');
 
     // Back to Clinic: the note was saved.
-    await tester.tap(find.byTooltip('Other clients'));
+    await tester.tap(find.byTooltip('Show clients'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Clinic').last);
     await tester.pumpAndSettle();
@@ -689,19 +693,29 @@ void main() {
     expect(find.widgetWithText(AppBar, 'Clients'), findsOneWidget);
   });
 
-  testWidgets('wide windows show the other clients beside the page', (
-    tester,
-  ) async {
+  testWidgets('the client sidebar slides out on hover', (tester) async {
     tester.view.physicalSize = const Size(1200, 1400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     await pumpApp(tester, _savedPrefs, openLogTrip: false);
     await tester.tap(find.text('Clinic'));
     await tester.pumpAndSettle();
-    expect(find.byTooltip('Other clients'), findsNothing);
+    expect(find.text('Dentist'), findsNothing);
+
+    // Hovering the strip of initials shows the names.
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(tester.getCenter(find.byTooltip('Show clients')));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Dentist'));
     await tester.pumpAndSettle();
     expect(find.widgetWithText(AppBar, 'Dentist'), findsOneWidget);
+
+    // Moving away slides it back.
+    await mouse.moveTo(const Offset(900, 700));
+    await tester.pumpAndSettle();
+    expect(find.text('Clinic'), findsNothing);
   });
 
   testWidgets('Mileage Log lives in Settings, with jobs and donation centers', (
@@ -752,7 +766,7 @@ void main() {
   testWidgets('a session is booked with an end time and billed at the '
       'client\'s rate', (tester) async {
     await pumpApp(tester, _savedPrefs, openLogTrip: false);
-    tester.view.physicalSize = const Size(420, 2200);
+    tester.view.physicalSize = const Size(420, 3200);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Clinic'));
     await tester.pumpAndSettle();
@@ -778,6 +792,8 @@ void main() {
 
     // Clients pre-pay: mark it paid by Venmo.
     expect(find.text('1 to bill · \$225'), findsOneWidget);
+    await tester.ensureVisible(find.text('Need to bill'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Need to bill'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Paid').last);
@@ -805,7 +821,7 @@ void main() {
   testWidgets('a client can have more contacts, found by search', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(420, 2000);
+    tester.view.physicalSize = const Size(420, 3200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     await pumpApp(tester, _savedPrefs, openLogTrip: false);
@@ -953,7 +969,17 @@ void main() {
     await tester.pumpAndSettle();
     await goBack(tester);
 
-    await tester.tap(find.text('Payments').last);
+    await tester.tap(find.text('Billing').last);
+    await tester.pumpAndSettle();
+    // Opens on sessions: the paid one is under "Paid in 2026".
+    expect(find.text('Paid in 2026'), findsOneWidget);
+    expect(
+      find.text('Nothing to bill. Every session is billed or paid.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Zelle · paid'), findsOneWidget);
+
+    await tester.tap(find.textContaining('Payments ('));
     await tester.pumpAndSettle();
     expect(find.text('Session 11/10/26'), findsOneWidget);
     expect(find.text('\$225.00'), findsWidgets);

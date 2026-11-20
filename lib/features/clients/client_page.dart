@@ -18,8 +18,7 @@ import '../../widgets/payment_fields.dart';
 import '../../services/client_jobs.dart';
 import '../../services/policy_forms.dart' show PolicyProgress;
 import '../../state/policy_forms_provider.dart';
-import '../../state/stripe_provider.dart';
-import '../payments/payment_link_dialog.dart';
+import '../payments/send_bill_dialog.dart';
 import '../policy_forms/policy_forms_page.dart';
 import '../../services/jobs.dart' show formatClock, formatHours;
 import 'client_status.dart';
@@ -67,12 +66,13 @@ String clientInitials(String name) {
   return words.take(2).map((w) => w[0].toUpperCase()).join();
 }
 
-/// Wide windows (the Mac) show the client list beside the page.
-const _sidebarBreakpoint = 900.0;
+/// The client sidebar: a strip of initials, sliding out to names.
+const _railWidth = 64.0;
+const _railOpenWidth = 264.0;
 
 /// One client's page: how to reach them, their details (tap any to edit),
-/// notes and sessions. The other clients are a tap away: in a sidebar on
-/// wide windows, or behind the people button on a phone.
+/// notes and sessions. The other clients are a tap away in the slim
+/// sidebar on the left, which slides out on hover (or its button).
 class ClientPage extends ConsumerStatefulWidget {
   const ClientPage({super.key, required this.clientId});
 
@@ -108,7 +108,6 @@ class _ClientPageState extends ConsumerState<ClientPage> {
   }
 
   void _pick(String id) {
-    _scaffold.currentState?.closeEndDrawer();
     if (id != _id) setState(() => _id = id);
   }
 
@@ -139,8 +138,6 @@ class _ClientPageState extends ConsumerState<ClientPage> {
   Widget build(BuildContext context) {
     final all = ref.watch(addressesProvider);
     final client = all.where((c) => c.id == _id).firstOrNull;
-    final wide = MediaQuery.sizeOf(context).width >= _sidebarBreakpoint;
-    final sidebar = _ClientSidebar(clients: all, currentId: _id, onPick: _pick);
 
     final Widget content = client == null
         // Deleted (possibly on the other device) while open.
@@ -159,12 +156,6 @@ class _ClientPageState extends ConsumerState<ClientPage> {
       appBar: AppBar(
         title: Text(client?.name ?? ''),
         actions: [
-          if (!wide)
-            IconButton(
-              tooltip: 'Other clients',
-              icon: const Icon(Icons.people_alt_outlined),
-              onPressed: () => _scaffold.currentState?.openEndDrawer(),
-            ),
           if (client != null)
             IconButton(
               tooltip: 'Delete client',
@@ -173,23 +164,29 @@ class _ClientPageState extends ConsumerState<ClientPage> {
             ),
         ],
       ),
-      endDrawer: wide ? null : Drawer(child: SafeArea(child: sidebar)),
-      body: wide
-          ? Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SizedBox(width: 280, child: sidebar),
-                const VerticalDivider(width: 1),
-                Expanded(child: content),
-              ],
-            )
-          : content,
+      // The page keeps its place; the sidebar slides out over it.
+      body: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: _railWidth),
+            child: content,
+          ),
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            child: _ClientSidebar(clients: all, currentId: _id, onPick: _pick),
+          ),
+        ],
+      ),
     );
   }
 }
 
-/// Every current client (and the open one, even if archived), by name.
-class _ClientSidebar extends StatelessWidget {
+/// Every current client (and the open one, even if archived), by name:
+/// a slim strip of initials that slides out (over the page) to show names
+/// on hover, or with its button on a touch screen.
+class _ClientSidebar extends StatefulWidget {
   const _ClientSidebar({
     required this.clients,
     required this.currentId,
@@ -201,47 +198,137 @@ class _ClientSidebar extends StatelessWidget {
   final void Function(String id) onPick;
 
   @override
+  State<_ClientSidebar> createState() => _ClientSidebarState();
+}
+
+class _ClientSidebarState extends State<_ClientSidebar> {
+  bool _open = false;
+
+  void _set(bool open) {
+    if (open != _open) setState(() => _open = open);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final shown = [
-      for (final c in clients)
-        if (c.status != ClientStatus.archived || c.id == currentId) c,
+      for (final c in widget.clients)
+        if (c.status != ClientStatus.archived || c.id == widget.currentId) c,
     ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return Material(
-      color: theme.colorScheme.surfaceContainerLow,
-      child: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            child: Text(
-              'Clients',
-              style: theme.textTheme.titleSmall?.copyWith(
-                color: theme.colorScheme.primary,
-              ),
+
+    Widget avatar(SavedAddress c) => CircleAvatar(
+      radius: 16,
+      backgroundColor: statusColors(c.status, scheme).bg,
+      foregroundColor: statusColors(c.status, scheme).fg,
+      child: Text(clientInitials(c.name), style: theme.textTheme.labelMedium),
+    );
+
+    return MouseRegion(
+      onEnter: (_) => _set(true),
+      onExit: (_) => _set(false),
+      child: TapRegion(
+        onTapOutside: (_) => _set(false),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          width: _open ? _railOpenWidth : _railWidth,
+          decoration: BoxDecoration(
+            boxShadow: _open
+                ? [
+                    BoxShadow(
+                      color: scheme.shadow.withValues(alpha: 0.18),
+                      blurRadius: 12,
+                      offset: const Offset(2, 0),
+                    ),
+                  ]
+                : null,
+          ),
+          // A Material (not a colored box) so the highlight on the open
+          // client shows.
+          child: Material(
+            color: scheme.surfaceContainerLow,
+            shape: Border(right: BorderSide(color: scheme.outlineVariant)),
+            clipBehavior: Clip.hardEdge,
+            child: LayoutBuilder(
+              builder: (context, box) {
+                // Names only once there's room (also while sliding).
+                final names = box.maxWidth > 160;
+                return ListView(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  children: [
+                    Row(
+                      children: [
+                        SizedBox(
+                          // Inside the 1-pixel border.
+                          width: _railWidth - 1,
+                          child: IconButton(
+                            tooltip: _open ? 'Hide clients' : 'Show clients',
+                            icon: Icon(_open ? Icons.menu_open : Icons.menu),
+                            onPressed: () => _set(!_open),
+                          ),
+                        ),
+                        if (names)
+                          Text(
+                            'Clients',
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              color: scheme.primary,
+                            ),
+                          ),
+                      ],
+                    ),
+                    for (final c in shown)
+                      names
+                          ? ListTile(
+                              dense: true,
+                              selected: c.id == widget.currentId,
+                              selectedTileColor: scheme.secondaryContainer,
+                              shape: const StadiumBorder(),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                              ),
+                              leading: avatar(c),
+                              title: Text(
+                                c.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(
+                                c.status.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              onTap: () {
+                                widget.onPick(c.id);
+                                _set(false);
+                              },
+                            )
+                          : Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Tooltip(
+                                message: c.name,
+                                child: InkWell(
+                                  customBorder: const CircleBorder(),
+                                  onTap: () => widget.onPick(c.id),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: c.id == widget.currentId
+                                          ? scheme.secondaryContainer
+                                          : null,
+                                    ),
+                                    child: Center(child: avatar(c)),
+                                  ),
+                                ),
+                              ),
+                            ),
+                  ],
+                );
+              },
             ),
           ),
-          for (final c in shown)
-            ListTile(
-              dense: true,
-              selected: c.id == currentId,
-              selectedTileColor: theme.colorScheme.secondaryContainer,
-              shape: const StadiumBorder(),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-              leading: CircleAvatar(
-                radius: 16,
-                backgroundColor: statusColors(c.status, theme.colorScheme).bg,
-                foregroundColor: statusColors(c.status, theme.colorScheme).fg,
-                child: Text(
-                  clientInitials(c.name),
-                  style: theme.textTheme.labelMedium,
-                ),
-              ),
-              title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(c.status.label),
-              onTap: () => onPick(c.id),
-            ),
-        ],
+        ),
       ),
     );
   }
@@ -448,7 +535,6 @@ class _ClientDetails extends ConsumerWidget {
           entries: jobs,
           now: now,
           onSave: (edit) => save(edit),
-          stripeConnected: ref.watch(stripeKeyProvider) != null,
         ),
         if (signed) ...[const SizedBox(height: 24), ...policyDoc],
       ],
@@ -1750,7 +1836,6 @@ class _JobsSection extends StatefulWidget {
     required this.entries,
     required this.now,
     required this.onSave,
-    this.stripeConnected = false,
   });
 
   final SavedAddress client;
@@ -1758,9 +1843,6 @@ class _JobsSection extends StatefulWidget {
   final DateTime now;
   final Future<void> Function(SavedAddress Function(SavedAddress c) edit)
   onSave;
-
-  /// Stripe is connected, so sessions can get payment links.
-  final bool stripeConnected;
 
   @override
   State<_JobsSection> createState() => _JobsSectionState();
@@ -1820,13 +1902,8 @@ class _JobsSectionState extends State<_JobsSection> {
       builder: (_) => _BillingDialog(
         initial: current,
         amount: sessionAmount(widget.client, e),
-        onPaymentLink: widget.stripeConnected || current.link != null
-            ? () => showPaymentLinkDialog(
-                context,
-                clientId: widget.client.id,
-                session: e,
-              )
-            : null,
+        onSendBill: () =>
+            showSendBillDialog(context, clientId: widget.client.id, session: e),
       ),
     );
     if (picked == null || picked == current) return;
@@ -1854,9 +1931,26 @@ class _JobsSectionState extends State<_JobsSection> {
     leading: leading,
     title: Text(title),
     subtitle: _lines(lines),
-    trailing: _BillingChip(
-      billing: billingFor(widget.client, e),
-      onTap: () => _setBilling(e),
+    trailing: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (billingFor(widget.client, e).status != BillingStatus.paid)
+          IconButton(
+            tooltip: billingFor(widget.client, e).status == BillingStatus.billed
+                ? 'Resend bill'
+                : 'Send bill',
+            icon: const Icon(Icons.send_outlined),
+            onPressed: () => showSendBillDialog(
+              context,
+              clientId: widget.client.id,
+              session: e,
+            ),
+          ),
+        _BillingChip(
+          billing: billingFor(widget.client, e),
+          onTap: () => _setBilling(e),
+        ),
+      ],
     ),
     onTap: onTap ?? () => _setBilling(e),
   );
@@ -2108,6 +2202,36 @@ class _JobsSectionState extends State<_JobsSection> {
       ),
     };
 
+/// Opens the billing of [session] (client [clientId]'s) from anywhere, e.g.
+/// the Billing tab: status, how it was paid, and sending the bill.
+Future<void> editSessionBilling(
+  BuildContext context,
+  WidgetRef ref, {
+  required String clientId,
+  required ClientJobEntry session,
+}) async {
+  SavedAddress? latest() =>
+      ref.read(addressesProvider).where((c) => c.id == clientId).firstOrNull;
+  final client = latest();
+  if (client == null) return;
+  final current = billingFor(client, session);
+  final picked = await showDialog<SessionBilling>(
+    context: context,
+    builder: (_) => _BillingDialog(
+      initial: current,
+      amount: sessionAmount(client, session),
+      onSendBill: () =>
+          showSendBillDialog(context, clientId: clientId, session: session),
+    ),
+  );
+  if (picked == null || picked == current) return;
+  final now = latest();
+  if (now == null) return;
+  await ref
+      .read(addressesProvider.notifier)
+      .replace(withBilling(now, session, picked));
+}
+
 /// "Need to bill", "Billed", or "Paid · Venmo"; tap to change.
 class _BillingChip extends StatelessWidget {
   const _BillingChip({required this.billing, required this.onTap});
@@ -2158,15 +2282,14 @@ class _BillingDialog extends StatefulWidget {
   const _BillingDialog({
     required this.initial,
     required this.amount,
-    this.onPaymentLink,
+    this.onSendBill,
   });
 
   final SessionBilling initial;
   final double? amount;
 
-  /// Opens the session's Stripe payment link (null: Stripe isn't
-  /// connected).
-  final VoidCallback? onPaymentLink;
+  /// Opens Send bill for the session.
+  final VoidCallback? onSendBill;
 
   @override
   State<_BillingDialog> createState() => _BillingDialogState();
@@ -2216,20 +2339,20 @@ class _BillingDialogState extends State<_BillingDialog> {
                   onChanged: (p) => setState(() => _paid = p),
                 ),
               ],
-              if (widget.onPaymentLink != null &&
+              if (widget.onSendBill != null &&
                   widget.initial.status != BillingStatus.paid) ...[
                 const SizedBox(height: 16),
                 OutlinedButton.icon(
                   icon: const Icon(Icons.link),
                   label: Text(
                     widget.initial.link == null
-                        ? 'Make a Stripe payment link'
-                        : 'Payment link sent · '
+                        ? 'Send bill'
+                        : 'Resend bill · Stripe link '
                               '${formatDollars(widget.initial.link!.amount)}',
                   ),
                   onPressed: () {
                     Navigator.of(context).pop();
-                    widget.onPaymentLink!();
+                    widget.onSendBill!();
                   },
                 ),
               ],

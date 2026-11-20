@@ -309,7 +309,7 @@ class StripePaymentsPage extends ConsumerWidget {
   }
 }
 
-/// On the Payments tab: Stripe payments waiting to be matched.
+/// On the Billing tab: Stripe payments waiting to be matched.
 class StripeBanner extends ConsumerWidget {
   const StripeBanner({super.key});
 

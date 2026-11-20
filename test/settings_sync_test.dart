@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
+import 'package:mileage_log/features/payments/send_bill_dialog.dart';
 import 'package:http/http.dart' as http;
 import 'package:material_ui/material_ui.dart';
 import 'package:mileage_log/app.dart';
@@ -1861,6 +1863,187 @@ void main() {
       await notifier.createLink(added.id, a1(), amount: 175, name: 'x');
       expect(ann().billing['a1']!.link!.id, 'plink_2');
       expect(ann().billing['a1']!.link!.amount, 175);
+    });
+  });
+
+  group('Send bill', () {
+    const clinic = Place(label: 'Clinic', address: '2 Main St', placeId: 'c');
+
+    test('Stripe is watched while a bill is out, and a paid bill is '
+        'announced', () async {
+      var t = DateTime(2026, 11, 19, 9);
+      final stripe = FakeStripe();
+      final mac = await device(FakeRemote(), clock: () => t, stripe: stripe);
+      await mac.read(syncProvider.notifier).signIn();
+      final clients = mac.read(addressesProvider.notifier);
+      final added = await clients.add(name: 'Bob Jones', place: clinic);
+      await clients.replace(
+        added.copyWith(
+          hourlyRate: 100,
+          scheduled: [
+            ScheduledJob(
+              id: 'b1',
+              start: DateTime(2026, 11, 21, 9),
+              end: DateTime(2026, 11, 21, 12),
+            ),
+          ],
+        ),
+      );
+      final notifier = mac.read(stripeProvider.notifier);
+      expect(await notifier.connect('rk_test_write'), isNull);
+      var reads = stripe.reads;
+
+      // Nothing out: no checking beyond the usual.
+      t = t.add(const Duration(minutes: 5));
+      await notifier.watch();
+      expect(stripe.reads, reads);
+
+      // A bill sent with a link: checked every couple of minutes.
+      await notifier.createLink(
+        added.id,
+        notifier.sessionsOf(added.id).single,
+        amount: 300,
+        name: 'x',
+      );
+      expect(notifier.billsOut, isTrue);
+      await notifier.watch();
+      expect(stripe.reads, ++reads);
+      t = t.add(const Duration(minutes: 1));
+      await notifier.watch();
+      expect(stripe.reads, reads, reason: 'checked a minute ago');
+
+      // Paid: marked paid, announced once, and the watching stops.
+      stripe.pay('plink_1', t, email: 'bob@example.com');
+      t = t.add(StripeNotifier.watchEvery);
+      await notifier.watch();
+      expect(stripe.reads, ++reads);
+      final b1 = mac
+          .read(addressesProvider)
+          .firstWhere((c) => c.id == added.id)
+          .billing['b1']!;
+      expect(b1.status, BillingStatus.paid);
+      expect(
+        mac.read(stripePaidNoticesProvider).single,
+        'Bob Jones paid \$300.00 for the session on 11/21 (Stripe · Card). '
+        'Marked paid.',
+      );
+      expect(notifier.billsOut, isFalse);
+      t = t.add(const Duration(minutes: 10));
+      await notifier.watch();
+      expect(stripe.reads, reads);
+    });
+
+    test('goes to whoever pays, by text if they have a phone', () {
+      final bob = SavedAddress(
+        id: 'b',
+        name: 'Bob Jones',
+        address: 'a',
+        email: 'bob@example.com',
+        contacts: const [
+          ClientContact(
+            id: 's',
+            name: 'Sue Jones',
+            label: 'Spouse',
+            phone: '410-555-0100',
+          ),
+          ClientContact(
+            id: 'a',
+            name: 'Ann Jones',
+            label: 'Pays',
+            email: 'ann@example.com',
+          ),
+        ],
+      );
+      expect(billRecipient(bob).id, 'a');
+      expect(
+        billRecipient(bob.copyWith(contacts: const [])).id,
+        SavedAddress.primaryContactId,
+      );
+      final session = ClientJobEntry(
+        state: ClientJobState.upcoming,
+        start: DateTime(2026, 12, 1, 9),
+        scheduled: ScheduledJob(id: 'x', start: DateTime(2026, 12, 1, 9)),
+      );
+      expect(
+        billMessage(
+          name: 'Ann Jones',
+          session: session,
+          amount: 300,
+          link: linkToken,
+        ),
+        'Hi Ann, here\'s the bill for your organizing session on 12/01/26 '
+        '(\$300). You can pay here: [payment link]',
+      );
+      expect(
+        billMessage(name: '', session: session, amount: null),
+        'Hi, here\'s the bill for your organizing session on 12/01/26. '
+        'Thank you!',
+      );
+    });
+
+    testWidgets('from Billing → Sessions, without Stripe: copied and '
+        'marked billed', (tester) async {
+      final store = MemoryLocalStore();
+      await store.saveAddresses([
+        SavedAddress(
+          id: 'c1',
+          name: 'Carol Lee',
+          address: '5 Pine Rd',
+          hourlyRate: 90,
+          scheduled: [
+            ScheduledJob(
+              id: 's1',
+              start: DateTime(2026, 11, 14, 9),
+              end: DateTime(2026, 11, 14, 11),
+            ),
+          ],
+        ),
+      ]);
+      String? copied;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copied = (call.arguments as Map)['text'] as String;
+          }
+          return null;
+        },
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localStoreProvider.overrideWithValue(store),
+            secretStoreProvider.overrideWithValue(MemorySecretStore()),
+            googleAccountServiceProvider.overrideWithValue(null),
+            placesServiceProvider.overrideWithValue(null),
+            distanceServiceProvider.overrideWithValue(
+              const DemoDistanceService(),
+            ),
+            clockProvider.overrideWithValue(() => DateTime(2026, 11, 19, 9)),
+          ],
+          child: const MileageApp(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Billing'));
+      await tester.pumpAndSettle();
+      expect(find.text('Need to bill'), findsOneWidget);
+      await tester.tap(find.text('Send bill'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Send bill · Carol Lee'), findsOneWidget);
+      // No phone or email for Carol: copying is the way.
+      await tester.tap(find.widgetWithText(FilledButton, 'Copy bill'));
+      await tester.pumpAndSettle();
+      expect(
+        copied,
+        'Hi Carol, here\'s the bill for your organizing session on '
+        '11/14/26 (\$180). Thank you!',
+      );
+      expect(
+        store.loadAddresses().single.billing['s1']!.status,
+        BillingStatus.billed,
+      );
+      expect(find.text('Resend'), findsOneWidget);
     });
   });
 }

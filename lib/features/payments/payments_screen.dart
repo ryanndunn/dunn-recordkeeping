@@ -3,7 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../models/billing.dart';
 import '../../models/money.dart';
+import '../../services/client_jobs.dart';
+import '../../services/jobs.dart' show formatHours;
 import '../../services/ledger.dart';
 import '../../state/money_provider.dart';
 import '../../state/providers.dart';
@@ -12,6 +15,7 @@ import '../../widgets/page_body.dart';
 import '../../widgets/payment_fields.dart';
 import '../clients/client_page.dart';
 import '../clients/client_status.dart';
+import 'send_bill_dialog.dart';
 import 'stripe_page.dart';
 
 const _uuid = Uuid();
@@ -44,9 +48,14 @@ class PaymentsScreen extends ConsumerStatefulWidget {
   ConsumerState<PaymentsScreen> createState() => _PaymentsScreenState();
 }
 
+/// What the Billing tab lists.
+enum _View { sessions, payments, expenses }
+
 class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
   late int _year = ref.read(clockProvider)().year;
-  bool _expenses = false;
+  _View _view = _View.sessions;
+
+  bool get _expenses => _view == _View.expenses;
 
   Future<void> _add() async {
     if (_expenses) {
@@ -122,6 +131,19 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
       for (final e in expenses)
         if (e.date.year == _year) e,
     ];
+    final sessions = ref.watch(allSessionsProvider);
+    final toBill = [
+      for (final r in sessions)
+        if (r.status == BillingStatus.needToBill) r,
+    ];
+    final billed = [
+      for (final r in sessions)
+        if (r.status == BillingStatus.billed) r,
+    ];
+    final paid = [
+      for (final r in sessions)
+        if (r.status == BillingStatus.paid && r.paidDay.year == _year) r,
+    ];
     final income = payments.fold<double>(0, (s, p) => s + p.amount);
     final outgo = spent.fold<double>(0, (s, e) => s + e.amount);
     var miles = 0.0;
@@ -139,12 +161,14 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Payments')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _add,
-        icon: const Icon(Icons.add),
-        label: Text(_expenses ? 'Add expense' : 'Add payment'),
-      ),
+      appBar: AppBar(title: const Text('Billing')),
+      floatingActionButton: _view == _View.sessions
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _add,
+              icon: const Icon(Icons.add),
+              label: Text(_expenses ? 'Add expense' : 'Add payment'),
+            ),
       body: PageListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
         children: [
@@ -161,20 +185,24 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
                 ],
                 onChanged: (y) => setState(() => _year = y ?? _year),
               ),
-              SegmentedButton<bool>(
+              SegmentedButton<_View>(
                 segments: [
                   ButtonSegment(
-                    value: false,
+                    value: _View.sessions,
+                    label: Text('Sessions (${toBill.length + billed.length})'),
+                  ),
+                  ButtonSegment(
+                    value: _View.payments,
                     label: Text('Payments (${payments.length})'),
                   ),
                   ButtonSegment(
-                    value: true,
+                    value: _View.expenses,
                     label: Text('Expenses (${spent.length})'),
                   ),
                 ],
-                selected: {_expenses},
+                selected: {_view},
                 showSelectedIcon: false,
-                onSelectionChanged: (v) => setState(() => _expenses = v.first),
+                onSelectionChanged: (v) => setState(() => _view = v.first),
               ),
             ],
           ),
@@ -254,7 +282,30 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
             ),
           const StripeBanner(),
           const SizedBox(height: 12),
-          if (_expenses)
+          if (_view == _View.sessions)
+            _SessionsView(
+              toBill: toBill,
+              billed: billed,
+              paid: paid,
+              year: _year,
+              onTap: (r) => editSessionBilling(
+                context,
+                ref,
+                clientId: r.client.id,
+                session: r.session,
+              ),
+              onSendBill: (r) => showSendBillDialog(
+                context,
+                clientId: r.client.id,
+                session: r.session,
+              ),
+              onOpenClient: (r) => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => ClientPage(clientId: r.client.id),
+                ),
+              ),
+            )
+          else if (_expenses)
             _ExpenseTable(
               expenses: spent,
               onTap: (e) => e.id.startsWith('stripefees:')
@@ -335,8 +386,18 @@ class _LedgerTable extends StatelessWidget {
 
   final List<String> headers;
 
-  /// Cells (the last is the amount) and what a tap does.
-  final List<({List<String> cells, VoidCallback onTap})> rows;
+  /// Cells (the last is the amount), what a tap does, a button for the
+  /// row (e.g. Send bill), and what tapping the name (the second cell)
+  /// does instead, e.g. open the client.
+  final List<
+    ({
+      List<String> cells,
+      VoidCallback onTap,
+      Widget? action,
+      VoidCallback? onName,
+    })
+  >
+  rows;
   final String empty;
 
   @override
@@ -362,12 +423,24 @@ class _LedgerTable extends StatelessWidget {
                   if (i > 0) const Divider(height: 1),
                   ListTile(
                     onTap: r.onTap,
-                    title: Text(r.cells[1].isEmpty ? '—' : r.cells[1]),
-                    subtitle: Text(
-                      [
-                        r.cells[0],
-                        ...r.cells.sublist(2, r.cells.length - 1),
-                      ].where((c) => c.isNotEmpty).join(' · '),
+                    title: Align(
+                      alignment: Alignment.centerLeft,
+                      child: _NameCell(
+                        r.cells[1].isEmpty ? '—' : r.cells[1],
+                        onTap: r.onName,
+                      ),
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          [
+                            r.cells[0],
+                            ...r.cells.sublist(2, r.cells.length - 1),
+                          ].where((c) => c.isNotEmpty).join(' · '),
+                        ),
+                        ?r.action,
+                      ],
                     ),
                     trailing: Text(
                       r.cells.last,
@@ -392,7 +465,8 @@ class _LedgerTable extends StatelessWidget {
                 ),
                 child: Text(
                   c,
-                  textAlign: i == cells.length - 1
+                  // The amount column, even with a button column after it.
+                  textAlign: i == headers.length - 1
                       ? TextAlign.right
                       : TextAlign.left,
                   style: header ? theme.textTheme.labelLarge : null,
@@ -400,19 +474,22 @@ class _LedgerTable extends StatelessWidget {
               ),
           ],
         );
+        final actions = rows.any((r) => r.action != null);
         return Card.outlined(
           margin: EdgeInsets.zero,
           clipBehavior: Clip.antiAlias,
           child: Table(
+            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
             columnWidths: {
               0: const FixedColumnWidth(100),
               headers.length - 1: const FixedColumnWidth(120),
+              if (actions) headers.length: const IntrinsicColumnWidth(),
             },
             border: TableBorder(
               horizontalInside: BorderSide(color: scheme.outlineVariant),
             ),
             children: [
-              row(headers, header: true),
+              row([...headers, if (actions) ''], header: true),
               for (final r in rows)
                 TableRow(
                   children: [
@@ -424,13 +501,23 @@ class _LedgerTable extends StatelessWidget {
                             horizontal: 12,
                             vertical: 10,
                           ),
-                          child: Text(
-                            c,
-                            textAlign: i == r.cells.length - 1
-                                ? TextAlign.right
-                                : TextAlign.left,
-                          ),
+                          child: i == 1 && r.onName != null
+                              ? Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: _NameCell(c, onTap: r.onName),
+                                )
+                              : Text(
+                                  c,
+                                  textAlign: i == r.cells.length - 1
+                                      ? TextAlign.right
+                                      : TextAlign.left,
+                                ),
                         ),
+                      ),
+                    if (actions)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: r.action ?? const SizedBox.shrink(),
                       ),
                   ],
                 ),
@@ -438,6 +525,191 @@ class _LedgerTable extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// Sessions to bill and billed but not paid (any date), then those paid
+/// in [year], each a table with its count and total. Tap one to change
+/// its billing.
+class _SessionsView extends StatelessWidget {
+  const _SessionsView({
+    required this.toBill,
+    required this.billed,
+    required this.paid,
+    required this.year,
+    required this.onTap,
+    required this.onSendBill,
+    required this.onOpenClient,
+  });
+
+  final List<SessionRow> toBill;
+  final List<SessionRow> billed;
+  final List<SessionRow> paid;
+  final int year;
+  final void Function(SessionRow r) onTap;
+  final void Function(SessionRow r) onSendBill;
+  final void Function(SessionRow r) onOpenClient;
+
+  /// "3 · $750" (and how many have no amount yet).
+  static String _sum(List<SessionRow> rows) {
+    final total = rows.fold<double>(0, (s, r) => s + (r.amount ?? 0));
+    final unknown = rows.where((r) => r.amount == null).length;
+    return [
+      '${rows.length} · ${money(total)}',
+      if (unknown > 0) '$unknown without an amount',
+    ].join(' · ');
+  }
+
+  static String _when(SessionRow r) => switch (r.session.state) {
+    ClientJobState.upcoming => 'Upcoming',
+    ClientJobState.inProgress => 'In progress',
+    ClientJobState.completed => 'Done',
+  };
+
+  static String _details(SessionRow r) {
+    final t = r.session.time;
+    final b = r.billing;
+    return [
+      if (b.status == BillingStatus.paid) ...[
+        if (b.method != null) b.method!.label,
+        if (b.paidOn != null) 'paid ${formatShortDate(b.paidOn!)}',
+      ] else ...[
+        _when(r),
+        if (t != null) formatHours(t),
+        if (b.link != null)
+          'Stripe link sent ${formatShortDate(b.link!.createdOn)}',
+      ],
+    ].join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    Widget section(
+      String title,
+      List<SessionRow> rows,
+      String empty, {
+      required BillingStatus status,
+    }) {
+      final c = billingColors(status, theme.colorScheme);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: c.bg,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    title,
+                    style: theme.textTheme.titleSmall?.copyWith(color: c.fg),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: Text(
+                    _sum(rows),
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            _LedgerTable(
+              headers: const ['Date', 'Client', 'Session', 'Amount'],
+              empty: empty,
+              rows: [
+                for (final r in rows)
+                  (
+                    cells: [
+                      formatShortDate(r.session.start),
+                      r.client.name,
+                      _details(r),
+                      r.amount == null ? '—' : money(r.amount!),
+                    ],
+                    onTap: () => onTap(r),
+                    onName: () => onOpenClient(r),
+                    action: r.status == BillingStatus.paid
+                        ? null
+                        : TextButton.icon(
+                            style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            icon: const Icon(Icons.send_outlined, size: 18),
+                            label: Text(
+                              r.status == BillingStatus.billed
+                                  ? 'Resend'
+                                  : 'Send bill',
+                            ),
+                            onPressed: () => onSendBill(r),
+                          ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        section(
+          'Need to bill',
+          toBill,
+          'Nothing to bill. Every session is billed or paid.',
+          status: BillingStatus.needToBill,
+        ),
+        section(
+          'Billed, not paid',
+          billed,
+          'Nothing waiting on payment.',
+          status: BillingStatus.billed,
+        ),
+        section(
+          'Paid in $year',
+          paid,
+          'No sessions paid in $year yet.',
+          status: BillingStatus.paid,
+        ),
+      ],
+    );
+  }
+}
+
+/// A name that opens something (e.g. the client's page) when tapped.
+class _NameCell extends StatelessWidget {
+  const _NameCell(this.name, {this.onTap});
+
+  final String name;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    if (onTap == null) return Text(name);
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Text(
+        name,
+        style: TextStyle(
+          color: scheme.primary,
+          decoration: TextDecoration.underline,
+          decorationColor: scheme.primary.withValues(alpha: 0.5),
+        ),
+      ),
     );
   }
 }
@@ -466,6 +738,8 @@ class _PaymentTable extends StatelessWidget {
             money(p.amount),
           ],
           onTap: () => onTap(p),
+          action: null,
+          onName: null,
         ),
     ],
   );
@@ -492,6 +766,8 @@ class _ExpenseTable extends StatelessWidget {
             money(e.amount),
           ],
           onTap: () => onTap(e),
+          action: null,
+          onName: null,
         ),
     ],
   );

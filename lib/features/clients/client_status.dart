@@ -81,10 +81,14 @@ class ClientStatusBadge extends StatelessWidget {
         children: [
           Icon(statusIcon(status), size: 14, color: c.fg),
           const SizedBox(width: 4),
-          Text(
-            status.label,
-            style: Theme.of(context).textTheme.labelMedium
-                ?.copyWith(color: c.fg),
+          Flexible(
+            child: Text(
+              status.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelMedium
+                  ?.copyWith(color: c.fg),
+            ),
           ),
           if (dropdown) Icon(Icons.arrow_drop_down, size: 18, color: c.fg),
         ],

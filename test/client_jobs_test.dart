@@ -143,4 +143,57 @@ void main() {
     expect(back.stops.single.address, '9 Elm St');
     expect(s.toJson().containsKey('synced'), isFalse);
   });
+
+  test('every client\'s sessions, grouped to bill / billed / paid', () {
+    ScheduledJob booked(String id, int day) => ScheduledJob(
+      id: id,
+      start: DateTime(2026, 11, day, 9),
+      end: DateTime(2026, 11, day, 11),
+    );
+    SessionBilling paidOn(DateTime d) => SessionBilling(
+      status: BillingStatus.paid,
+      method: PaymentMethod.venmo,
+      amount: 150,
+      paidOn: d,
+    );
+    final ann = SavedAddress(
+      id: 'a',
+      name: 'Ann',
+      address: '1 A St',
+      hourlyRate: 100,
+      scheduled: [booked('a1', 25), booked('a2', 10), booked('a3', 12)],
+      billing: {
+        'a2': paidOn(DateTime(2026, 11, 3)),
+        'a3': const SessionBilling(status: BillingStatus.billed),
+      },
+    );
+    final bo = SavedAddress(
+      id: 'b',
+      name: 'Bo',
+      address: '2 B St',
+      scheduled: [booked('b1', 5), booked('b2', 20)],
+      billing: {'b2': paidOn(DateTime(2026, 11, 18))},
+    );
+    final rows = allSessions(
+      clients: [ann, bo],
+      jobs: const [],
+      trips: const [],
+      now: DateTime(2026, 11, 19),
+    );
+    expect(
+      [for (final r in rows) '${r.status.name}:${r.session.scheduled!.id}'],
+      [
+        // To bill: oldest first (past ones first, then upcoming).
+        'needToBill:b1',
+        'needToBill:a1',
+        'billed:a3',
+        // Paid: newest payment first.
+        'paid:b2',
+        'paid:a2',
+      ],
+    );
+    expect(rows.first.amount, 150, reason: '2 hours at Bo\'s \$75 rate');
+    expect(rows[1].amount, 200, reason: '2 hours at Ann\'s \$100');
+    expect(rows.last.paidDay, DateTime(2026, 11, 3));
+  });
 }

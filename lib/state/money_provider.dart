@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/lead.dart';
 import '../models/money.dart';
+import '../services/client_jobs.dart';
 import '../services/ledger.dart';
 import '../services/local_store.dart';
 import '../services/settings_sync.dart';
@@ -230,6 +231,16 @@ final ledgerProvider = Provider<List<LedgerPayment>>(
     clubDecisions: ref.watch(clubDecisionsProvider),
     stripe: ref.watch(stripeProvider).payments,
     stripeDecisions: ref.watch(stripeDecisionsProvider),
+  ),
+);
+
+/// Every client's sessions with their billing (to bill, billed, paid).
+final allSessionsProvider = Provider<List<SessionRow>>(
+  (ref) => allSessions(
+    clients: ref.watch(addressesProvider),
+    jobs: ref.watch(allJobSummariesProvider),
+    trips: ref.watch(tripsProvider),
+    now: ref.read(clockProvider)(),
   ),
 );
 
