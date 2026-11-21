@@ -6,12 +6,12 @@ import 'package:material_ui/material_ui.dart';
 
 import 'background/job_watcher.dart';
 import 'features/calendar/calendar_screen.dart';
+import 'features/club/club_screen.dart';
 import 'features/clients/clients_screen.dart';
 import 'features/leads/leads_screen.dart';
 import 'features/payments/payments_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'state/leads_provider.dart';
-import 'state/money_provider.dart';
 import 'state/providers.dart';
 import 'state/stripe_provider.dart';
 
@@ -95,6 +95,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   static const _pages = [
     ClientsScreen(),
     LeadsScreen(),
+    ClubScreen(),
     CalendarScreen(),
     PaymentsScreen(),
     SettingsScreen(),
@@ -129,7 +130,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final newLeads = ref.watch(openLeadsProvider).length;
-    final toConfirm = ref.watch(clubToConfirmProvider).length;
     // A bill just paid through Stripe: say so, wherever you are.
     ref.listen(stripePaidNoticesProvider, (_, notices) {
       if (notices.isEmpty) return;
@@ -190,21 +190,18 @@ class _HomeShellState extends ConsumerState<HomeShell> {
             label: 'Leads',
           ),
           const NavigationDestination(
+            icon: Icon(Icons.groups_outlined),
+            selectedIcon: Icon(Icons.groups),
+            label: 'Club',
+          ),
+          const NavigationDestination(
             icon: Icon(Icons.calendar_month_outlined),
             selectedIcon: Icon(Icons.calendar_month),
             label: 'Calendar',
           ),
-          NavigationDestination(
-            icon: Badge(
-              isLabelVisible: toConfirm > 0,
-              label: Text('$toConfirm'),
-              child: const Icon(Icons.payments_outlined),
-            ),
-            selectedIcon: Badge(
-              isLabelVisible: toConfirm > 0,
-              label: Text('$toConfirm'),
-              child: const Icon(Icons.payments),
-            ),
+          const NavigationDestination(
+            icon: Icon(Icons.payments_outlined),
+            selectedIcon: Icon(Icons.payments),
             label: 'Billing',
           ),
           const NavigationDestination(

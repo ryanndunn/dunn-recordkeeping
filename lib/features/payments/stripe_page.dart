@@ -10,6 +10,7 @@ import '../../state/providers.dart';
 import '../../state/stripe_provider.dart';
 import '../../widgets/page_body.dart';
 import '../clients/client_status.dart';
+import '../../widgets/refresh_all_button.dart';
 
 String _cents(double v) => '\$${v.toStringAsFixed(2)}';
 
@@ -272,15 +273,7 @@ class StripePaymentsPage extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Stripe payments'),
-        actions: [
-          IconButton(
-            tooltip: 'Check Stripe now',
-            icon: const Icon(Icons.refresh),
-            onPressed: state.checking
-                ? null
-                : () => ref.read(stripeProvider.notifier).refresh(force: true),
-          ),
-        ],
+        actions: [const RefreshAllButton()],
       ),
       body: PageListView(
         padding: const EdgeInsets.only(bottom: 32),

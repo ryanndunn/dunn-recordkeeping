@@ -9,6 +9,8 @@ import '../payments/stripe_page.dart';
 import '../policy_forms/policy_forms_page.dart';
 import '../log_trip/log_trip_screen.dart';
 import '../../widgets/place_dialog.dart';
+import '../../widgets/refresh_all_button.dart';
+import 'tracking_activity_page.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -59,7 +61,10 @@ class SettingsScreen extends ConsumerWidget {
     );
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(
+        title: const Text('Settings'),
+        actions: const [RefreshAllButton()],
+      ),
       body: PageListView(
         children: [
           const _MileageLogTile(),
@@ -234,6 +239,20 @@ class _AutoTripsSection extends ConsumerWidget {
               'aren\'t delayed.',
             ),
           ),
+        ListTile(
+          leading: const Icon(Icons.timeline),
+          title: const Text('Tracking activity'),
+          subtitle: const Text(
+            'What the phone noticed: arrivals, departures, stops and '
+            'sessions starting or ending',
+          ),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => const TrackingActivityPage(),
+            ),
+          ),
+        ),
       ],
     );
   }

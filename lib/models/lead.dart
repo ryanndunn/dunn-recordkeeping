@@ -1,19 +1,10 @@
 /// Someone who filled out the website's contact form ("Want me to contact
-/// you?"). Read from the form's responses tab in the spreadsheet.
-/// Where a lead came from.
-enum LeadSource {
-  form('Website form'),
-  club('Dunn Club');
-
-  const LeadSource(this.label);
-  final String label;
-}
-
+/// you?"). Read from the form's responses tab in the spreadsheet. (Dunn
+/// Club sign-ups are club members, not leads.)
 class Lead {
   const Lead({
     required this.id,
     required this.submitted,
-    this.source = LeadSource.form,
     this.submittedAt,
     this.name = '',
     this.phone = '',
@@ -25,8 +16,6 @@ class Lead {
 
   /// Stable across reads: the form's timestamp and the name.
   final String id;
-
-  final LeadSource source;
 
   /// The timestamp as the sheet shows it, and parsed (null if it can't be).
   final String submitted;
@@ -45,7 +34,6 @@ class Lead {
 
   Map<String, dynamic> toJson() => {
     'id': id,
-    if (source != LeadSource.form) 'source': source.name,
     'submitted': submitted,
     if (submittedAt != null) 'submittedAt': submittedAt!.toIso8601String(),
     if (name.isNotEmpty) 'name': name,
@@ -58,9 +46,6 @@ class Lead {
 
   factory Lead.fromJson(Map<String, dynamic> json) => Lead(
     id: json['id'] as String,
-    source:
-        LeadSource.values.where((s) => s.name == json['source']).firstOrNull ??
-        LeadSource.form,
     submitted: json['submitted'] as String? ?? '',
     submittedAt: json['submittedAt'] == null
         ? null
@@ -75,14 +60,10 @@ class Lead {
 
   /// What goes in the client's notes when the lead becomes a client.
   String notesForClient(String Function(DateTime d) formatDate) => [
-    if (source == LeadSource.club)
-      help
-    else ...[
-      submittedAt == null
-          ? 'From the website form.'
-          : 'From the website form, ${formatDate(submittedAt!)}.',
-      if (help.isNotEmpty) 'What can I help you with? $help',
-    ],
+    submittedAt == null
+        ? 'From the website form.'
+        : 'From the website form, ${formatDate(submittedAt!)}.',
+    if (help.isNotEmpty) 'What can I help you with? $help',
     if (heardFrom.isNotEmpty) 'How they heard about us: $heardFrom',
   ].join('\n');
 }

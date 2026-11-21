@@ -11,6 +11,7 @@ import '../../services/jobs.dart' show formatClock;
 import '../../state/calendar_provider.dart';
 import '../../state/providers.dart';
 import '../clients/client_page.dart';
+import '../../widgets/refresh_all_button.dart';
 
 const _uuid = Uuid();
 const _hourHeight = 48.0;
@@ -270,19 +271,8 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                 icon: const Icon(Icons.checklist),
                 onPressed: _chooseCalendars,
               ),
-            IconButton(
-              tooltip: 'Refresh',
-              icon: cal.loading
-                  ? const SizedBox.square(
-                      dimension: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh),
-              onPressed: cal.loading
-                  ? null
-                  : () => ref.read(calendarProvider.notifier).refresh(),
-            ),
           ],
+          const RefreshAllButton(),
         ],
       ),
       body: LayoutBuilder(

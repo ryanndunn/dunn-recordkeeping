@@ -13,6 +13,7 @@ import '../../widgets/client_dialog.dart';
 import '../../widgets/page_body.dart';
 import '../clients/client_page.dart';
 import '../clients/client_status.dart';
+import '../../widgets/refresh_all_button.dart';
 
 const _uuid = Uuid();
 
@@ -27,16 +28,8 @@ class LeadsScreen extends ConsumerStatefulWidget {
 
 class _LeadsScreenState extends ConsumerState<LeadsScreen> {
   LeadStatus _show = LeadStatus.open;
-  bool _checking = false;
 
-  Future<void> _refresh() async {
-    setState(() => _checking = true);
-    try {
-      await ref.read(syncProvider.notifier).syncNow();
-    } finally {
-      if (mounted) setState(() => _checking = false);
-    }
-  }
+  Future<void> _refresh() => ref.read(syncProvider.notifier).syncNow();
 
   /// Google's best match for the address typed on the form, or null.
   Future<Place?> _findAddress(String text) async {
@@ -94,7 +87,6 @@ class _LeadsScreenState extends ConsumerState<LeadsScreen> {
   @override
   Widget build(BuildContext context) {
     final info = ref.watch(leadsProvider);
-    // Website form and Dunn Club sign-ups together.
     final leads = ref.watch(allLeadsProvider);
     final states = ref.watch(leadStatesProvider);
     final signedIn = ref.watch(syncProvider.select((s) => s.signedIn));
@@ -169,19 +161,7 @@ class _LeadsScreenState extends ConsumerState<LeadsScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Leads'),
-        actions: [
-          if (signedIn)
-            IconButton(
-              tooltip: 'Check for new leads',
-              icon: _checking
-                  ? const SizedBox.square(
-                      dimension: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh),
-              onPressed: _checking ? null : _refresh,
-            ),
-        ],
+        actions: [const RefreshAllButton()],
       ),
       body: body,
     );
@@ -222,11 +202,9 @@ class _Setup extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       children: [
         const Text(
-          'Leads come from the website\'s contact form and the Let\'s Get '
-          'This Dunn Club sign-up form. Link each form to the app\'s '
-          'spreadsheet once (the same steps for both), and every new entry '
-          'shows up here, on the phone and the Mac. Dunn Club sign-ups also '
-          'go to Payments.',
+          'Leads come from the website\'s contact form. Link the form to the '
+          'app\'s spreadsheet once, and every new inquiry shows up here, on '
+          'the phone and the Mac. (Dunn Club sign-ups go to the Club tab.)',
         ),
         const SizedBox(height: 16),
         Card.outlined(
@@ -359,25 +337,6 @@ class _LeadCard extends StatelessWidget {
                     style: theme.textTheme.titleMedium,
                   ),
                 ),
-                if (lead.source == LeadSource.club) ...[
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.tertiaryContainer,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      'Dunn Club',
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: theme.colorScheme.onTertiaryContainer,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                ],
                 Text(when, style: muted),
               ],
             ),
@@ -397,9 +356,7 @@ class _LeadCard extends StatelessWidget {
             if (lead.address.isNotEmpty)
               detail(Icons.place_outlined, lead.address),
             if (lead.help.isNotEmpty)
-              lead.source == LeadSource.club
-                  ? answer('Let\'s Get This Dunn Club', lead.help)
-                  : answer('What can I help you with?', lead.help),
+              answer('What can I help you with?', lead.help),
             if (lead.heardFrom.isNotEmpty)
               answer('How did you hear about me?', lead.heardFrom),
             const SizedBox(height: 8),

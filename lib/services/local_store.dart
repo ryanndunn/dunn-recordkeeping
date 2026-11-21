@@ -6,6 +6,7 @@ import '../models/app_settings.dart';
 import '../models/job.dart';
 import '../models/saved_address.dart';
 import '../models/trip.dart';
+import 'tracking_log.dart';
 
 /// On-device copy of clients, trips and settings, so the app works
 /// offline. Settings and clients sync through Google Drive; trips go to the
@@ -123,6 +124,11 @@ class LocalStore {
   /// Picks up changes made by the background handlers.
   Future<void> reload() => _prefs.reload();
 
+  /// What automatic tracking saw and did, newest first.
+  List<TrackingEvent> loadTrackingLog() => TrackingLog.read(_prefs);
+
+  Future<void> clearTrackingLog() => TrackingLog.clear(_prefs);
+
   List<Job> loadJobs() =>
       _loadList(_jobsKey).map((e) => Job.fromJson(e)).toList();
 
@@ -183,8 +189,10 @@ class LocalStore {
 
   static const manualPaymentsKey = 'manual_payments_v1';
   static const expensesKey = 'expenses_v1';
-  static const clubDecisionsKey = 'club_decisions_v1';
+  static const clubSeatsKey = 'club_payments_v1';
+  static const clubMembersKey = 'club_members_v1';
   static const clubRegistrationsKey = 'club_registrations_v1';
+  static const webinarsKey = 'webinars_v1';
 
   /// The spreadsheet already given the Payments/Expenses/Tax Summary tabs.
   static const recordsSheetKey = 'records_sheet_v1';
@@ -288,7 +296,7 @@ class LocalStore {
       _stripeKeyChangedKey,
       stripeDecisionsKey,
       clubRegistrationsKey,
-      clubDecisionsKey,
+      clubSeatsKey,
       recordsSheetKey,
       ledgerWrittenKey,
       if (!keepData) ...[
@@ -300,6 +308,8 @@ class LocalStore {
         _lastDepartureKey,
         manualPaymentsKey,
         expensesKey,
+        webinarsKey,
+        clubMembersKey,
       ],
     ]) {
       await _prefs.remove(key);

@@ -23,10 +23,14 @@ import 'package:mileage_log/models/trip.dart';
 import 'package:mileage_log/services/distance_service.dart';
 import 'package:mileage_log/services/google_account.dart';
 import 'package:mileage_log/services/local_store.dart';
+import 'package:mileage_log/services/tracking_log.dart';
 import 'package:mileage_log/services/mileage_sheet.dart';
 import 'package:mileage_log/services/secret_store.dart';
 import 'package:mileage_log/services/settings_sync.dart';
 import 'package:mileage_log/state/providers.dart';
+import 'package:mileage_log/state/club_provider.dart';
+import 'package:mileage_log/models/club_member.dart';
+import 'package:mileage_log/models/webinar.dart';
 
 import 'fakes.dart';
 
@@ -139,6 +143,10 @@ class MemoryLocalStore implements LocalStore {
       _donationDeletions = {...d};
   @override
   Future<void> reload() async {}
+  @override
+  List<TrackingEvent> loadTrackingLog() => const [];
+  @override
+  Future<void> clearTrackingLog() async {}
   String? _sort;
   @override
   String? get clientSort => _sort;
@@ -265,7 +273,7 @@ class MemoryLocalStore implements LocalStore {
     _stripeKeyChanged = null;
     for (final k in [
       LocalStore.clubRegistrationsKey,
-      LocalStore.clubDecisionsKey,
+      LocalStore.clubSeatsKey,
       LocalStore.recordsSheetKey,
       LocalStore.ledgerWrittenKey,
       LocalStore.stripeDecisionsKey,
@@ -1327,7 +1335,8 @@ void main() {
       expect(ed().status, ClientStatus.active);
     });
 
-    test('Dunn Club sign-ups, payments and expenses reach the other device '
+    test('Dunn Club members, webinar payments and expenses reach the other '
+        'device '
         'and the business records spreadsheet', () async {
       var t = now;
       final remote = FakeRemote();
@@ -1339,23 +1348,38 @@ void main() {
       await phone.read(syncProvider.notifier).syncNow();
       expect(sheet.upgraded, {'sheet-1'}, reason: 'made a business record');
 
+      // Sam fills out the interest form: a new member, not a lead.
       sheet.clubResponses['sheet-1'] = [
-        ['Timestamp', 'Email Address'],
-        ['10/2/2026 9:00:00', 'sam@example.com'],
-        ['11/3/2026 9:00:00', 'sam@example.com'],
+        ['Timestamp', 'Email Address', 'Name'],
+        ['10/2/2026 9:00:00', 'sam@example.com', 'Sam'],
       ];
       await phone.read(syncProvider.notifier).syncNow();
-      final regs = phone.read(clubRegistrationsProvider);
-      expect(regs, hasLength(2));
-      expect(phone.read(clubToConfirmProvider).single.id, regs[1].id);
-      // Sam is a lead too.
-      expect(phone.read(openLeadsProvider).single.email, 'sam@example.com');
+      expect(phone.read(openLeadsProvider), isEmpty);
+      final sam = phone.read(clubMembersProvider).single;
+      expect(sam.email, 'sam@example.com');
 
+      // An existing member added by hand on the Mac, and a webinar.
+      t = t.add(const Duration(minutes: 1));
+      await mac
+          .read(memberRecordsProvider.notifier)
+          .save(const ClubMember(id: 'pat', email: 'pat@example.com'));
+      await mac
+          .read(webinarRecordsProvider.notifier)
+          .save(Webinar(id: 'nov', start: DateTime(2026, 11, 26, 20)));
+      await mac.read(syncProvider.notifier).syncNow();
+      await phone.read(syncProvider.notifier).syncNow();
+      expect(phone.read(clubMembersProvider).map((m) => m.email), [
+        'pat@example.com',
+        'sam@example.com',
+      ]);
+
+      // Sam pays for it on the phone; the Mac records an expense.
       t = t.add(const Duration(minutes: 1));
       await phone
-          .read(clubDecisionRecordsProvider.notifier)
+          .read(clubSeatRecordsProvider.notifier)
           .decide(
-            regs[1].id,
+            'nov',
+            sam.id,
             const ClubDecision(ClubStatus.paid, method: PaymentMethod.venmo),
           );
       await mac
@@ -1373,12 +1397,14 @@ void main() {
       await mac.read(syncProvider.notifier).syncNow();
       await phone.read(syncProvider.notifier).syncNow();
 
-      // Both devices have both.
+      // Both devices have both, and see who paid.
       for (final d in [phone, mac]) {
         expect(d.read(ledgerProvider).single.amount, clubPrice);
         expect(d.read(expensesProvider).single.vendor, 'Canva');
+        final nov = d.read(webinarSummariesProvider).upcoming.single;
+        expect(nov.paid.single.email, 'sam@example.com');
+        expect(nov.notPaid.single.email, 'pat@example.com');
       }
-      expect(mac.read(clubToConfirmProvider), isEmpty);
       // The spreadsheet has them, and isn't rewritten when nothing changed.
       expect(sheet.paymentRowsBySheet['sheet-1']!.single[5], clubPrice);
       expect(sheet.expenseRowsBySheet['sheet-1']!.single[1], 'Canva');

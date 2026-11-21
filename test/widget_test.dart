@@ -926,6 +926,117 @@ void main() {
     expect(find.byType(NavigationBar), findsOneWidget);
   });
 
+  testWidgets('Club lists members, marks clients, and shows who paid for '
+      'the next webinar, to send them the link', (tester) async {
+    tester.view.physicalSize = const Size(900, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final soon = DateTime.now().add(const Duration(days: 10));
+    final next = DateTime(soon.year, soon.month, soon.day, 20);
+    final at = DateTime.now().toUtc().toIso8601String();
+    final prefs = {
+      ..._savedPrefs,
+      'addresses_v1': jsonEncode([
+        for (final c
+            in jsonDecode(_savedPrefs['addresses_v1']! as String) as List)
+          (c as Map<String, dynamic>)['id'] == 'c'
+              ? {...c, 'email': 'clinic@example.com'}
+              : c,
+      ]),
+      // Sam filled out the interest form.
+      'club_registrations_v1': jsonEncode([
+        {
+          'id': 'r1',
+          'at': DateTime.now().toIso8601String(),
+          'email': 'sam@example.com',
+          'name': 'Sam Lee',
+          'mailingList': true,
+        },
+      ]),
+      // The clinic's owner was added by hand.
+      'club_members_v1': jsonEncode({
+        'm1': {
+          'v': {'email': 'clinic@example.com', 'name': 'Clara'},
+          'at': at,
+        },
+      }),
+      'webinars_v1': jsonEncode({
+        'w1': {
+          'v': {'start': next.toIso8601String(), 'topic': 'Closets'},
+          'at': at,
+        },
+      }),
+      'club_payments_v1': jsonEncode({
+        'w1|m1': {
+          'v': {'status': 'paid', 'method': 'venmo', 'amount': 20},
+          'at': at,
+        },
+      }),
+    };
+    await pumpApp(tester, prefs, openLogTrip: false);
+    await tester.tap(find.text('Club'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Members (2)'), findsOneWidget);
+    expect(find.text('Sam Lee'), findsOneWidget);
+    expect(find.text('New'), findsOneWidget, reason: 'Sam just joined');
+    expect(find.text('Add as client'), findsOneWidget, reason: 'Sam only');
+    expect(find.widgetWithText(ActionChip, 'Client'), findsOneWidget);
+
+    // Leads are contact form inquiries only.
+    await tester.tap(find.text('Leads'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sam Lee'), findsNothing);
+    await tester.tap(find.text('Club'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Webinars (1)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Closets'), findsOneWidget);
+    expect(find.textContaining('1 paid · 1 not paid'), findsOneWidget);
+    await tester.tap(find.text('Closets'));
+    await tester.pumpAndSettle();
+    expect(find.text('Paid (1)'), findsOneWidget);
+    expect(find.text('Not paid (1)'), findsOneWidget);
+    expect(find.textContaining('First meeting (free)'), findsOneWidget);
+
+    // The join link goes only to Clara, who paid.
+    await tester.tap(find.text('Send join link (1)'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('To 1 member who paid'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Clara'),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    // The invite goes to the mailing list.
+    await tester.tap(find.text('Email the invite'));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('To 2 members on the mailing list'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    // Sam pays.
+    await tester.tap(find.text('Mark paid'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Paid \$20.00'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Venmo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Paid (2)'), findsOneWidget);
+    expect(find.text('Send join link (2)'), findsOneWidget);
+  });
+
   testWidgets('a paid session and an added expense show in Payments', (
     tester,
   ) async {

@@ -13,6 +13,7 @@ import '../../widgets/client_dialog.dart';
 import '../../widgets/place_dialog.dart';
 import 'donation_centers_section.dart';
 import 'job_card.dart';
+import '../../widgets/refresh_all_button.dart';
 
 class LogTripScreen extends ConsumerStatefulWidget {
   const LogTripScreen({super.key});
@@ -235,7 +236,10 @@ class _LogTripScreenState extends ConsumerState<LogTripScreen> {
         : 0;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Mileage Log')),
+      appBar: AppBar(
+        title: const Text('Mileage Log'),
+        actions: const [RefreshAllButton()],
+      ),
       body: PageListView(
         padding: const EdgeInsets.all(16),
         children: [

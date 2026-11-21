@@ -129,16 +129,19 @@ class Expense {
   );
 }
 
-/// The monthly webinar's price after someone's first (free) meeting.
+/// A Dunn Club meeting's price; a member's first meeting is free.
 const clubPrice = 20.0;
 
-/// Someone signing up for Let's Get This Dunn Club (one form response).
+/// One response to the Let's Get This Dunn Club interest form.
 class ClubRegistration {
   const ClubRegistration({
     required this.id,
     required this.at,
     required this.email,
     this.name = '',
+    this.mailingList,
+    this.areas = '',
+    this.topics = '',
   });
 
   final String id;
@@ -146,11 +149,23 @@ class ClubRegistration {
   final String email;
   final String name;
 
+  /// Their answer to "added to the e-mailing list?" (null if not asked).
+  final bool? mailingList;
+
+  /// "Which areas do you struggle to manage?"
+  final String areas;
+
+  /// "What topics are you interested in?"
+  final String topics;
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'at': at.toIso8601String(),
     'email': email,
     if (name.isNotEmpty) 'name': name,
+    if (mailingList != null) 'mailingList': mailingList,
+    if (areas.isNotEmpty) 'areas': areas,
+    if (topics.isNotEmpty) 'topics': topics,
   };
 
   factory ClubRegistration.fromJson(Map<String, dynamic> json) =>
@@ -159,34 +174,52 @@ class ClubRegistration {
         at: DateTime.parse(json['at'] as String),
         email: json['email'] as String? ?? '',
         name: json['name'] as String? ?? '',
+        mailingList: json['mailingList'] as bool?,
+        areas: json['areas'] as String? ?? '',
+        topics: json['topics'] as String? ?? '',
       );
 }
 
+/// Where a member stands for one webinar.
 enum ClubStatus {
-  /// Their first meeting, which is free.
-  free('Free (first meeting)'),
-
-  /// Paid the $20.
   paid('Paid'),
 
-  /// Not paid (didn't come, or waived).
-  unpaid('Not paid'),
-
-  /// Not decided yet.
-  toConfirm('To confirm');
+  /// Their first meeting (always free), or let in without paying.
+  free('Free'),
+  unpaid('Not paid');
 
   const ClubStatus(this.label);
   final String label;
 }
 
-/// What was recorded for a registration. Synced between devices.
+/// A member's payment for one webinar, and whether they were sent the
+/// link to join. Synced between devices.
 class ClubDecision {
-  const ClubDecision(this.status, {this.method, this.paidOn, this.amount});
+  const ClubDecision(
+    this.status, {
+    this.method,
+    this.paidOn,
+    this.amount,
+    this.linkSentAt,
+  });
 
   final ClubStatus status;
   final PaymentMethod? method;
   final DateTime? paidOn;
   final double? amount;
+
+  /// When the join link was emailed to them.
+  final DateTime? linkSentAt;
+
+  bool get attending => status != ClubStatus.unpaid;
+
+  ClubDecision withLinkSent(DateTime at) => ClubDecision(
+    status,
+    method: method,
+    paidOn: paidOn,
+    amount: amount,
+    linkSentAt: at,
+  );
 
   Map<String, dynamic> toJson() => {
     'status': status.name,
@@ -195,16 +228,20 @@ class ClubDecision {
       if (paidOn != null) 'paidOn': dateOnly(paidOn!),
       if (amount != null) 'amount': amount,
     },
+    if (linkSentAt != null) 'linkSentAt': linkSentAt!.toIso8601String(),
   };
 
   factory ClubDecision.fromJson(Map<String, dynamic> json) => ClubDecision(
     ClubStatus.values.where((s) => s.name == json['status']).firstOrNull ??
-        ClubStatus.toConfirm,
+        ClubStatus.unpaid,
     method: PaymentMethod.values
         .where((m) => m.name == json['method'])
         .firstOrNull,
     paidOn: json['paidOn'] == null ? null : _parseDay(json['paidOn'] as String),
     amount: (json['amount'] as num?)?.toDouble(),
+    linkSentAt: json['linkSentAt'] == null
+        ? null
+        : DateTime.parse(json['linkSentAt'] as String),
   );
 }
 
@@ -226,7 +263,7 @@ class LedgerPayment {
     this.clientId,
   });
 
-  /// Stable: `session:<client>:<key>`, `club:<registration>`,
+  /// Stable: `session:<client>:<key>`, `club:<webinar>|<member>`,
   /// `stripe:<checkout session>` or the manual payment's ID.
   final String id;
   final PaymentKind kind;

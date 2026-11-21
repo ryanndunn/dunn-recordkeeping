@@ -16,6 +16,7 @@ import '../services/local_store.dart';
 import '../services/places_service.dart';
 import '../services/secret_store.dart';
 import '../services/stop_detector.dart';
+import '../services/tracking_log.dart';
 import 'arrival_handler.dart';
 
 /// While a job is running, the phone watches its location (with an
@@ -72,9 +73,16 @@ Future<void> startJobWatcher(Place startedAt) async {
       await prefs.setString(_startAtKey, '${startedAt.lat},${startedAt.lng}');
     }
     final service = FlutterBackgroundService();
-    if (!await service.isRunning()) await service.startService();
+    if (!await service.isRunning()) {
+      final started = await service.startService();
+      await TrackingLog.add(
+        started
+            ? 'Started watching for stops'
+            : 'Android would not start watching for stops',
+      );
+    }
   } catch (e) {
-    debugPrint('Dunn Record Keeping: could not start watching: $e');
+    await TrackingLog.add('Could not start watching for stops: $e');
   }
 }
 
@@ -84,7 +92,7 @@ Future<void> stopJobWatcher() async {
     final service = FlutterBackgroundService();
     if (await service.isRunning()) service.invoke('stop');
   } catch (e) {
-    debugPrint('Dunn Record Keeping: could not stop watching: $e');
+    await TrackingLog.add('Could not stop watching for stops: $e');
   }
 }
 
@@ -109,6 +117,7 @@ Future<void> jobWatcherMain(ServiceInstance service) async {
   StreamSubscription<Position>? positions;
   Future<void> stop() async {
     await positions?.cancel();
+    await TrackingLog.add('Stopped watching for stops');
     await service.stopSelf();
   }
 
@@ -149,9 +158,13 @@ Future<void> jobWatcherMain(ServiceInstance service) async {
             );
           }
           final found = detector.add(p.latitude, p.longitude, p.timestamp);
-          if (found != null) await _onStop(store, found);
+          // A slow connection must not leave the watcher stuck on one
+          // stop and blind to the next.
+          if (found != null) {
+            await _onStop(store, found).timeout(const Duration(seconds: 90));
+          }
         } catch (e) {
-          debugPrint('Dunn Record Keeping: stop not handled: $e');
+          await TrackingLog.add('A stop wasn\'t handled: $e');
         } finally {
           busy = false;
         }
@@ -173,7 +186,14 @@ Future<void> _onStop(LocalStore store, DetectedStop stop) async {
     clientStops: clientStops(store.loadAddresses()),
     donationCenters: store.loadDonationCenters(),
   );
-  if (known.kind != StopKind.other) return;
+  if (known.kind != StopKind.other) {
+    // Its geofence handles it.
+    await TrackingLog.add(
+      'Watcher saw a stop at ${known.place.label}',
+      at: stop.arrivedAt,
+    );
+    return;
+  }
 
   final named = await nameStop(here);
   await handleStop(named.kind, named.place, stop.arrivedAt);

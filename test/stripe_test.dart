@@ -283,8 +283,6 @@ void main() {
         final ledger = allPayments(
           clients: [jane],
           manual: const [],
-          registrations: const [],
-          clubDecisions: const {},
           stripe: stripe,
           stripeDecisions: const {
             'cs_1': StripeDecision(clientId: 'j', sessionKey: 'b1'),
@@ -307,12 +305,7 @@ void main() {
     );
 
     test('without the Stripe payment (not read here), the session counts', () {
-      final ledger = allPayments(
-        clients: [jane],
-        manual: const [],
-        registrations: const [],
-        clubDecisions: const {},
-      );
+      final ledger = allPayments(clients: [jane], manual: const []);
       expect(ledger.single.id, 'session:j:b1');
     });
 

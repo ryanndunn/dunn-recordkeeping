@@ -19,6 +19,28 @@ bool keepsJobGoing(StopKind kind) =>
 /// didn't see you leave (30 mph).
 const estimateMilesPerHour = 30.0;
 
+/// Time between leaving a client and arriving at the next one, beyond the
+/// drive itself, that means you stopped somewhere the phone didn't catch
+/// (a haircut, lunch): the session ended when you left, and the next
+/// client starts a new one.
+const unexplainedBreak = Duration(minutes: 30);
+
+/// How long a drive of [miles] takes at [estimateMilesPerHour].
+Duration driveTime(double miles) =>
+    Duration(minutes: (miles / estimateMilesPerHour * 60).round());
+
+/// True if arriving at [arrivedAt] after leaving at [departedAt] took
+/// [unexplainedBreak] longer than a drive of [miles].
+bool tookABreak({
+  required DateTime? departedAt,
+  required DateTime arrivedAt,
+  required double miles,
+}) {
+  if (departedAt == null || miles <= 0) return false;
+  final away = arrivedAt.difference(departedAt) - driveTime(miles);
+  return away > unexplainedBreak;
+}
+
 /// What a stop means for the mileage log and the session clock.
 class StopDecision {
   const StopDecision({
@@ -138,14 +160,15 @@ DateTime departureTime({
   DateTime? notBefore,
 }) {
   if (departedAt != null) return departedAt;
-  final minutes = (miles / estimateMilesPerHour * 60).round();
-  final t = arrivedAt.subtract(Duration(minutes: minutes));
+  final t = arrivedAt.subtract(driveTime(miles));
   return notBefore != null && t.isBefore(notBefore) ? notBefore : t;
 }
 
 /// Applies [decision] (whose drive measured [miles]) to the session list.
 /// A session starts on arriving at the first client and ends when you
-/// left the last one.
+/// left the last one. Arriving at a client long after leaving the last
+/// stop (see [tookABreak]) ends the session at that departure and starts
+/// a new one, in case the phone missed a stop in between.
 List<Job> applyStop({
   required List<Job> jobs,
   required StopDecision decision,
@@ -157,7 +180,24 @@ List<Job> applyStop({
 }) {
   var list = closeStaleJobs(jobs, arrivedAt);
   if (decision.trip == null) return list;
-  final running = activeJob(list, arrivedAt);
+  var running = activeJob(list, arrivedAt);
+  final left = decision.departedAt;
+  var startsJob = decision.startsJob;
+  if (running != null &&
+      left != null &&
+      kind == StopKind.client &&
+      tookABreak(departedAt: left, arrivedAt: arrivedAt, miles: miles)) {
+    final end = running.endingAt(left);
+    final closed = running.copyWith(
+      end: end,
+      leftClientAt: running.atClient ? left : null,
+      visits: running.visitsLeftAt(end),
+      atClient: false,
+    );
+    list = [for (final j in list) j.id == closed.id ? closed : j];
+    running = null;
+    startsJob = true;
+  }
 
   Job updated;
   if (running != null) {
@@ -175,7 +215,7 @@ List<Job> applyStop({
         visits: running.visitsLeftAt(left),
       );
     }
-  } else if (decision.startsJob) {
+  } else if (startsJob) {
     updated = Job(id: newId(), start: arrivedAt, lastActivity: arrivedAt);
     list = [...list, updated];
   } else {
@@ -258,19 +298,36 @@ double jobMiles(Job job, List<Trip> trips) {
   return (kind: StopKind.other, place: place);
 }
 
-/// Names an unsaved stop from Google's nearby places (nearest first): a gas
-/// station keeps the job going; otherwise the nearest place's name and
-/// address, or [here] as is when Google found nothing.
+/// How close a gas station must be to a stop, if something else is
+/// nearer, for the stop to count as getting gas. Pumps are usually
+/// farther from the station's map pin than a shop is from its own.
+const gasStationMeters = 35.0;
+
+/// Names an unsaved stop from Google's nearby places (nearest first): at a
+/// gas station it keeps the job going; otherwise it's named after the
+/// nearest place, or keeps [here] as is when Google found nothing.
+///
+/// Only the nearest place, or a station right at the stop, counts as gas:
+/// a barber or restaurant next door to a gas station is not a gas stop.
 ({StopKind kind, Place place}) classifyNearby(
   Place here,
   List<NearbyPlace> nearby,
 ) {
-  for (final n in nearby) {
-    if (n.isGasStation) return (kind: StopKind.gas, place: n.place);
-  }
   if (nearby.isEmpty) return (kind: StopKind.other, place: here);
-  return (kind: StopKind.other, place: nearby.first.place);
+  final nearest = nearby.first;
+  if (nearest.isGasStation) return (kind: StopKind.gas, place: nearest.place);
+  for (final n in nearby) {
+    if (n.isGasStation && _within(here, n.place, gasStationMeters)) {
+      return (kind: StopKind.gas, place: n.place);
+    }
+  }
+  return (kind: StopKind.other, place: nearest.place);
 }
+
+bool _within(Place a, Place b, double meters) =>
+    a.hasCoordinates &&
+    b.hasCoordinates &&
+    AddressMatcher.distanceMeters(a.lat!, a.lng!, b.lat!, b.lng!) <= meters;
 
 String _two(int n) => n.toString().padLeft(2, '0');
 

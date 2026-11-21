@@ -22,6 +22,7 @@ import '../services/local_store.dart';
 import '../services/mileage_sheet.dart';
 import '../services/routes_distance_service.dart';
 import '../services/secret_store.dart';
+import '../services/tracking_log.dart';
 
 /// Called by Android (in the background, even with the app closed) when
 /// the phone has stayed 5 minutes at a saved place (client, donation
@@ -40,10 +41,7 @@ Future<void> onArrival(GeofenceCallbackParams params) async {
         ).timeout(const Duration(seconds: 50));
       }
     } catch (e) {
-      debugPrint(
-        'Dunn Record Keeping: ${params.event} at ${fence.id} not '
-        'handled: $e',
-      );
+      await TrackingLog.add('${params.event.name} at ${fence.id} failed: $e');
     }
   }
 }
@@ -54,11 +52,23 @@ Future<void> _recordDeparture(String fenceId, DateTime at) async {
   final store = await _openStore();
   if (!store.autoTripsEnabled) return;
   final where = _placeForFence(store, fenceId);
-  if (where == null) return;
+  if (where == null) {
+    await TrackingLog.add('Left a place that is no longer saved', at: at);
+    return;
+  }
   await store.setLastDeparture(PlaceVisit(where.place, at));
   final jobs = store.loadJobs();
   final next = applyDeparture(jobs: jobs, kind: where.kind, at: at);
   if (!identical(next, jobs)) await store.saveJobs(next);
+  final running = activeJob(next, at);
+  await TrackingLog.add(
+    'Left ${where.place.label}'
+    '${running == null ? '' : ' (in a session)'}',
+    at: at,
+  );
+  // In a session, make sure the phone is watching for the next stop
+  // (Android may have stopped the watcher since the session started).
+  if (running != null) await startJobWatcher(where.place);
 }
 
 ({StopKind kind, Place place})? _placeForFence(LocalStore store, String id) =>
@@ -80,7 +90,10 @@ Future<void> handleFenceArrival(String fenceId, DateTime arrivedAt) async {
   final store = await _openStore();
   if (!store.autoTripsEnabled) return;
   final where = _placeForFence(store, fenceId);
-  if (where == null) return;
+  if (where == null) {
+    await TrackingLog.add('Arrived at a place that is no longer saved');
+    return;
+  }
   await handleStop(where.kind, where.place, arrivedAt);
 }
 
@@ -114,6 +127,7 @@ Future<void> handleStop(StopKind kind, Place place, DateTime arrivedAt) async {
     client.close();
   }
 
+  await TrackingLog.add(describeOutcome(kind, place, outcome), at: arrivedAt);
   if (outcome.startedJob != null) {
     await startJobWatcher(place);
   } else if (outcome.endedJob != null) {
@@ -261,7 +275,10 @@ Future<void> _notify(
       : '${trip.miles.toStringAsFixed(1)} mi'
             '${trip.estimated ? ' (estimate)' : ''}'
             '${trip.synced ? ' · added to your spreadsheet' : ''}';
-  final job = started != null
+  final job = started != null && ended != null
+      ? 'Previous session ended ${formatClock(ended.end!)}. New session '
+            'started ${formatClock(started.start)}.'
+      : started != null
       ? 'Session started ${formatClock(started.start)}. Watching for stops.'
       : ended != null
       ? 'Session ended after ${formatHours(ended.duration)}'
@@ -273,4 +290,29 @@ Future<void> _notify(
     body: job == null ? miles : '$miles\n$job',
     notificationDetails: const NotificationDetails(android: _channel),
   );
+}
+
+/// One line for the tracking log about a stop and what it did.
+String describeOutcome(StopKind kind, Place place, StopOutcome outcome) {
+  final what = switch (kind) {
+    StopKind.home => 'home',
+    StopKind.client => 'client',
+    StopKind.donation => 'donation center',
+    StopKind.gas => 'gas station',
+    StopKind.other => 'other place',
+  };
+  final parts = ['Stopped at ${place.label} ($what)'];
+  final trip = outcome.trip;
+  if (trip == null) {
+    parts.add('nothing to log');
+  } else {
+    parts.add('logged ${trip.from.label} → ${trip.to.label}');
+  }
+  if (outcome.endedJob case final j?) {
+    parts.add('session ended ${formatClock(j.end ?? j.start)}');
+  }
+  if (outcome.startedJob case final j?) {
+    parts.add('session started ${formatClock(j.start)}');
+  }
+  return parts.join('; ');
 }

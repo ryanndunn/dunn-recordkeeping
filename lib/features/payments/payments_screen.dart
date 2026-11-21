@@ -15,8 +15,11 @@ import '../../widgets/page_body.dart';
 import '../../widgets/payment_fields.dart';
 import '../clients/client_page.dart';
 import '../clients/client_status.dart';
+import '../../services/club.dart' show parseSeatKey;
+import '../club/webinar_page.dart';
 import 'send_bill_dialog.dart';
 import 'stripe_page.dart';
+import '../../widgets/refresh_all_button.dart';
 
 const _uuid = Uuid();
 
@@ -80,12 +83,12 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
           ),
         );
       case PaymentKind.club:
-        final regId = p.id.substring('club:'.length);
-        final reg = ref
-            .read(clubRegistrationsProvider)
-            .where((r) => r.id == regId)
-            .firstOrNull;
-        if (reg != null) await showClubDialog(context, reg);
+        final seat = parseSeatKey(p.id.substring('club:'.length));
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => WebinarPage(id: seat.webinarId),
+          ),
+        );
       case PaymentKind.stripe:
         final id = p.id.substring('stripe:'.length);
         final payment = ref
@@ -113,7 +116,6 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
     final ledger = ref.watch(ledgerProvider);
     final expenses = ref.watch(allExpensesProvider);
     final trips = ref.watch(tripsProvider);
-    final toConfirm = ref.watch(clubToConfirmProvider);
     final now = ref.read(clockProvider)();
 
     final years = {
@@ -161,7 +163,10 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Billing')),
+      appBar: AppBar(
+        title: const Text('Billing'),
+        actions: const [RefreshAllButton()],
+      ),
       floatingActionButton: _view == _View.sessions
           ? null
           : FloatingActionButton.extended(
@@ -236,50 +241,6 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
               ),
             ),
           ),
-          if (toConfirm.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Card.filled(
-              margin: EdgeInsets.zero,
-              color: theme.colorScheme.tertiaryContainer,
-              child: ListTile(
-                leading: Icon(
-                  Icons.groups_outlined,
-                  color: theme.colorScheme.onTertiaryContainer,
-                ),
-                title: Text(
-                  toConfirm.length == 1
-                      ? '1 Dunn Club sign-up to confirm'
-                      : '${toConfirm.length} Dunn Club sign-ups to confirm',
-                  style: TextStyle(
-                    color: theme.colorScheme.onTertiaryContainer,
-                  ),
-                ),
-                subtitle: Text(
-                  'After their free first meeting, it\'s '
-                  '${money(clubPrice)} a meeting. Mark each paid or not.',
-                  style: TextStyle(
-                    color: theme.colorScheme.onTertiaryContainer,
-                  ),
-                ),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _openClub(context),
-              ),
-            ),
-          ] else
-            Align(
-              alignment: Alignment.centerLeft,
-              child: ref.watch(clubRegistrationsProvider).isNotEmpty
-                  ? TextButton.icon(
-                      onPressed: () => _openClub(context),
-                      icon: const Icon(Icons.groups_outlined),
-                      label: const Text('Dunn Club sign-ups'),
-                    )
-                  : TextButton.icon(
-                      onPressed: () => _howToLinkClub(context),
-                      icon: const Icon(Icons.help_outline),
-                      label: const Text('Add Dunn Club sign-ups'),
-                    ),
-            ),
           const StripeBanner(),
           const SizedBox(height: 12),
           if (_view == _View.sessions)
@@ -328,34 +289,6 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
       ),
     );
   }
-
-  Future<void> _howToLinkClub(BuildContext context) => showDialog<void>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Dunn Club sign-ups'),
-      content: const SizedBox(
-        width: 440,
-        child: Text(
-          'Link the Let\'s Get This Dunn Club form to the app\'s spreadsheet '
-          'once:\n\n'
-          '1. Open the form in Google Forms and go to the Responses tab.\n'
-          '2. Choose "Link to Sheets", then "Select existing spreadsheet".\n'
-          '3. Pick "Dunn Record Keeping - Business Records".\n\n'
-          'After the next sync, each sign-up shows here (first meeting '
-          'free, then \$20 to confirm) and in Leads.',
-        ),
-      ),
-      actions: [
-        FilledButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('OK'),
-        ),
-      ],
-    ),
-  );
-
-  void _openClub(BuildContext context) => Navigator.of(context)
-      .push(MaterialPageRoute<void>(builder: (_) => const ClubSignupsPage()));
 }
 
 class _Total extends StatelessWidget {
@@ -1069,205 +1002,6 @@ class _ExpenseDialogState extends ConsumerState<_ExpenseDialog> {
         ),
         FilledButton(
           onPressed: ready ? _save : null,
-          child: const Text('Save'),
-        ),
-      ],
-    );
-  }
-}
-
-// --------------------------------------------------------- Dunn Club
-
-/// Everyone who signed up for Let's Get This Dunn Club: those to confirm
-/// first, then the rest, newest first. Tap one to change it.
-class ClubSignupsPage extends ConsumerWidget {
-  const ClubSignupsPage({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final regs = ref.watch(clubRegistrationsProvider);
-    final decisions = ref.watch(clubDecisionsProvider);
-    final theme = Theme.of(context);
-    final sorted = [...regs]
-      ..sort((a, b) {
-        final ca = clubStatusOf(a, regs, decisions) == ClubStatus.toConfirm;
-        final cb = clubStatusOf(b, regs, decisions) == ClubStatus.toConfirm;
-        if (ca != cb) return ca ? -1 : 1;
-        return b.at.compareTo(a.at);
-      });
-    return Scaffold(
-      appBar: AppBar(title: const Text('Dunn Club sign-ups')),
-      body: PageListView(
-        padding: const EdgeInsets.only(bottom: 32),
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              'Each response to the Dunn Club form. Someone\'s first '
-              'meeting is free; after that it\'s ${money(clubPrice)}. Paid '
-              'ones go in Payments (and the spreadsheet) for taxes.',
-            ),
-          ),
-          for (final r in sorted)
-            Builder(
-              builder: (context) {
-                final status = clubStatusOf(r, regs, decisions);
-                final d = decisions[r.id];
-                final colors = switch (status) {
-                  ClubStatus.toConfirm => (
-                    theme.colorScheme.errorContainer,
-                    theme.colorScheme.onErrorContainer,
-                  ),
-                  ClubStatus.paid => (
-                    theme.colorScheme.primaryContainer,
-                    theme.colorScheme.onPrimaryContainer,
-                  ),
-                  _ => (
-                    theme.colorScheme.surfaceContainerHighest,
-                    theme.colorScheme.onSurfaceVariant,
-                  ),
-                };
-                return ListTile(
-                  leading: const Icon(Icons.person_outline),
-                  title: Text(r.name.isEmpty ? r.email : r.name),
-                  subtitle: Text(
-                    [
-                      if (r.name.isNotEmpty) r.email,
-                      'Signed up ${formatShortDate(r.at)}',
-                      if (status == ClubStatus.paid && d != null)
-                        '${money(d.amount ?? clubPrice)}'
-                            '${d.method == null ? '' : ' · ${d.method!.label}'}',
-                    ].join(' · '),
-                  ),
-                  trailing: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: colors.$1,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      status.label,
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: colors.$2,
-                      ),
-                    ),
-                  ),
-                  onTap: () => showClubDialog(context, r),
-                );
-              },
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Mark a Dunn Club sign-up paid (how, when, how much), not paid, or free.
-Future<void> showClubDialog(BuildContext context, ClubRegistration reg) =>
-    showDialog<void>(
-      context: context,
-      builder: (_) => _ClubDialog(reg: reg),
-    );
-
-class _ClubDialog extends ConsumerStatefulWidget {
-  const _ClubDialog({required this.reg});
-  final ClubRegistration reg;
-
-  @override
-  ConsumerState<_ClubDialog> createState() => _ClubDialogState();
-}
-
-class _ClubDialogState extends ConsumerState<_ClubDialog> {
-  late final ClubDecision? _existing = ref.read(
-    clubDecisionsProvider,
-  )[widget.reg.id];
-  late ClubStatus _status = () {
-    final s = clubStatusOf(
-      widget.reg,
-      ref.read(clubRegistrationsProvider),
-      ref.read(clubDecisionsProvider),
-    );
-    return s == ClubStatus.toConfirm ? ClubStatus.paid : s;
-  }();
-  late PaymentDetails _paid = (
-    method: _existing?.method,
-    date:
-        _existing?.paidOn ??
-        DateTime(widget.reg.at.year, widget.reg.at.month, widget.reg.at.day),
-    amount: _existing?.amount ?? clubPrice,
-  );
-
-  bool get _ready =>
-      _status != ClubStatus.paid ||
-      (_paid.method != null && _paid.amount != null);
-
-  Future<void> _save() async {
-    final d = _paid.date;
-    await ref
-        .read(clubDecisionRecordsProvider.notifier)
-        .decide(
-          widget.reg.id,
-          _status == ClubStatus.paid
-              ? ClubDecision(
-                  ClubStatus.paid,
-                  method: _paid.method,
-                  paidOn: DateTime(d.year, d.month, d.day),
-                  amount: _paid.amount,
-                )
-              : ClubDecision(_status),
-        );
-    if (mounted) Navigator.of(context).pop();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final r = widget.reg;
-    return AlertDialog(
-      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-      title: Text(r.name.isEmpty ? r.email : r.name),
-      content: SizedBox(
-        width: 420,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text('Signed up ${formatShortDate(r.at)} · ${r.email}'),
-              const SizedBox(height: 12),
-              SegmentedButton<ClubStatus>(
-                segments: const [
-                  ButtonSegment(value: ClubStatus.paid, label: Text('Paid')),
-                  ButtonSegment(
-                    value: ClubStatus.unpaid,
-                    label: Text('Not paid'),
-                  ),
-                  ButtonSegment(value: ClubStatus.free, label: Text('Free')),
-                ],
-                selected: {_status},
-                showSelectedIcon: false,
-                onSelectionChanged: (v) => setState(() => _status = v.first),
-              ),
-              if (_status == ClubStatus.paid) ...[
-                const SizedBox(height: 16),
-                PaymentFields(
-                  initial: _paid,
-                  onChanged: (p) => setState(() => _paid = p),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: _ready ? _save : null,
           child: const Text('Save'),
         ),
       ],

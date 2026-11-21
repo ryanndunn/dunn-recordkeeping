@@ -214,6 +214,56 @@ void main() {
       expect(job.end!.difference(job.start), _m(240));
     });
 
+    test(
+      'a long time away between clients (a stop the phone missed) ends '
+      'the session when you left; the next client starts a new one',
+      () async {
+        // Arrive at the clinic 10:50, leave 11:30, reach the dentist at
+        // 1:00: 15 miles is about 30 minutes, so an hour is unexplained (a
+        // haircut on the way).
+        final phone = await Phone.create();
+        final arrive = morning.add(_m(110));
+        await phone.client(clinic, arrive);
+        await phone.store.setLastDeparture(
+          PlaceVisit(clinic.toPlace(), morning.add(_m(150))),
+        );
+        final out = await phone.client(dentist, morning.add(_m(240)));
+
+        expect(out.endedJob?.end, morning.add(_m(150)), reason: 'left clinic');
+        expect(out.startedJob?.start, morning.add(_m(240)));
+        final jobs = phone.jobs;
+        expect(jobs, hasLength(2));
+        expect(jobs.first.clients, ['Clinic']);
+        expect(jobs.first.timeWith('Clinic', DateTime(2027)), _m(40));
+        expect(jobs.last.isActive, isTrue);
+        expect(jobs.last.clients, ['Dentist']);
+        expect(route(out.trip!), 'Clinic → Dentist');
+        // That drive is in neither session's miles.
+        expect(jobMiles(jobs.first, await phone.trips()), 0);
+        expect(
+          jobMiles(
+            jobs.last.copyWith(end: DateTime(2027)),
+            await phone.trips(),
+          ),
+          0,
+        );
+      },
+    );
+
+    test('a drive between clients that takes about as long as it should '
+        'stays in one session', () async {
+      final phone = await Phone.create();
+      await phone.client(clinic, morning);
+      await phone.store.setLastDeparture(
+        PlaceVisit(clinic.toPlace(), morning.add(_m(60))),
+      );
+      // 30 minutes of driving plus 25 in traffic.
+      final out = await phone.client(dentist, morning.add(_m(115)));
+      expect(out.startedJob, isNull);
+      expect(out.endedJob, isNull);
+      expect(phone.jobs.single.clients, ['Clinic', 'Dentist']);
+    });
+
     test('a donation stop after the last client is not session time', () async {
       final phone = await Phone.create();
       await phone.client(clinic, morning);
@@ -351,13 +401,51 @@ void main() {
       lng: -89,
     );
 
-    test('a gas station nearby keeps the job going', () {
+    test('stopping at a gas station keeps the job going', () {
       final found = classifyNearby(here, const [
-        NearbyPlace(store, ['store']),
         NearbyPlace(gas, ['gas_station', 'convenience_store']),
+        NearbyPlace(store, ['store']),
       ]);
       expect(found.kind, StopKind.gas);
       expect(found.place, gas);
+    });
+
+    test('a shop next door to a gas station is not a gas stop', () {
+      // The barber is nearest; the station is ~60 m away.
+      const barber = Place(
+        label: 'Barber',
+        address: '1 York Rd',
+        lat: 40.0001,
+        lng: -89,
+      );
+      const station = Place(
+        label: 'Exxon',
+        address: '3 York Rd',
+        lat: 40.00055,
+        lng: -89,
+      );
+      final found = classifyNearby(here, const [
+        NearbyPlace(barber, ['hair_care']),
+        NearbyPlace(station, ['gas_station']),
+      ]);
+      expect(found.kind, StopKind.other);
+      expect(found.place.label, 'Barber');
+    });
+
+    test('at the pumps, a station right there counts even if its shop is '
+        'nearer', () {
+      const shop = Place(label: 'Wawa market', address: 'x', lat: 40, lng: -89);
+      const station = Place(
+        label: 'Wawa',
+        address: 'y',
+        lat: 40.0002,
+        lng: -89,
+      );
+      final found = classifyNearby(here, const [
+        NearbyPlace(shop, ['convenience_store']),
+        NearbyPlace(station, ['gas_station']),
+      ]);
+      expect(found.kind, StopKind.gas);
     });
 
     test('otherwise the stop is named after the nearest place', () {

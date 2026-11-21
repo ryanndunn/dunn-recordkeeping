@@ -9,6 +9,7 @@ import '../../widgets/page_body.dart';
 import '../policy_forms/policy_forms_page.dart';
 import 'client_page.dart';
 import 'client_status.dart';
+import '../../widgets/refresh_all_button.dart';
 
 /// The client list, and the app's first screen. Tap a client to open their
 /// page. Each client's address is where appointments happen: logging a trip
@@ -122,6 +123,7 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen> {
                 ),
             ],
           ),
+          const RefreshAllButton(),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(

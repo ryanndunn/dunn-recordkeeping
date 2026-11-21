@@ -1,4 +1,4 @@
-import '../models/lead.dart';
+import '../models/lead.dart' show parseFormTimestamp;
 import '../models/money.dart';
 import '../models/saved_address.dart';
 import 'policy_forms.dart' show isPolicyFormHeader;
@@ -30,14 +30,18 @@ bool isContactFormHeader(List<String> header) {
   return h.any((x) => x.contains('phone') || x.contains('help'));
 }
 
-/// Dunn Club sign-ups in a form responses tab (header first), oldest
-/// first. Rows without an email are skipped.
+/// Responses to the Dunn Club interest form (header first), oldest first.
+/// Rows without an email are skipped.
 List<ClubRegistration> parseClubResponses(List<List<String>> rows) {
   if (rows.isEmpty) return const [];
   final header = [for (final h in rows.first) h.trim().toLowerCase()];
-  final time = header.indexWhere((h) => h.startsWith('timestamp'));
-  final email = header.indexWhere((h) => h.contains('email'));
-  final name = header.indexWhere((h) => h.contains('name'));
+  int col(bool Function(String h) test) => header.indexWhere(test);
+  final time = col((h) => h.startsWith('timestamp'));
+  final email = col((h) => h.startsWith('email') || h == 'e-mail');
+  final name = col((h) => h.startsWith('name') || h.contains('your name'));
+  final mailing = col((h) => h.contains('mailing list'));
+  final areas = col((h) => h.contains('areas'));
+  final topics = col((h) => h.contains('topics'));
   String at(List<String> row, int i) =>
       i < 0 || i >= row.length ? '' : row[i].trim();
   final out = <ClubRegistration>[];
@@ -45,12 +49,16 @@ List<ClubRegistration> parseClubResponses(List<List<String>> rows) {
     final e = at(row, email).toLowerCase();
     if (e.isEmpty) continue;
     final stamp = at(row, time);
+    final list = at(row, mailing).toLowerCase();
     out.add(
       ClubRegistration(
         id: '$stamp|$e',
         at: parseFormTimestamp(stamp) ?? DateTime(1970),
         email: e,
         name: at(row, name),
+        mailingList: list.isEmpty ? null : list.startsWith('y'),
+        areas: at(row, areas),
+        topics: at(row, topics),
       ),
     );
   }
@@ -58,70 +66,16 @@ List<ClubRegistration> parseClubResponses(List<List<String>> rows) {
   return out;
 }
 
-/// The registration's status: as recorded, or (nothing recorded) free if
-/// it's that email's first sign-up, otherwise waiting to be confirmed.
-ClubStatus clubStatusOf(
-  ClubRegistration reg,
-  List<ClubRegistration> all,
-  Map<String, ClubDecision> decisions,
-) {
-  final d = decisions[reg.id];
-  if (d != null) return d.status;
-  final first = all
-      .where((r) => r.email == reg.email)
-      .reduce((a, b) => a.at.isAfter(b.at) ? b : a);
-  return first.id == reg.id ? ClubStatus.free : ClubStatus.toConfirm;
-}
-
-/// Each person who signed up for the Dunn Club, as a lead (one per email),
-/// unless they're already a client.
-List<Lead> clubLeads(List<ClubRegistration> regs, List<SavedAddress> clients) {
-  final clientEmails = {
-    for (final c in clients) ...[
-      c.email.toLowerCase(),
-      for (final p in c.contacts) p.email.toLowerCase(),
-    ],
-  }..remove('');
-  final byEmail = <String, List<ClubRegistration>>{};
-  for (final r in regs) {
-    (byEmail[r.email] ??= []).add(r);
-  }
-  final leads = <Lead>[];
-  for (final e in byEmail.entries) {
-    if (clientEmails.contains(e.key)) continue;
-    final list = e.value..sort((a, b) => a.at.compareTo(b.at));
-    final name = list.map((r) => r.name).where((n) => n.isNotEmpty).lastOrNull;
-    final first = list.first;
-    final last = list.last;
-    leads.add(
-      Lead(
-        id: 'club:${e.key}',
-        source: LeadSource.club,
-        submitted: _short(first.at),
-        submittedAt: last.at,
-        name: name ?? '',
-        email: e.key,
-        help: list.length == 1
-            ? 'Signed up for Let\'s Get This Dunn Club on ${_short(first.at)}.'
-            : 'Signed up for Let\'s Get This Dunn Club ${list.length} times, '
-                  'first on ${_short(first.at)}.',
-      ),
-    );
-  }
-  return leads;
-}
-
 // -------------------------------------------------------------- payments
 
 /// Every payment received: sessions marked paid on client pages, Dunn
-/// Club sign-ups marked paid, payments entered by hand, and Stripe
+/// Club webinars paid for ([club]), payments entered by hand, and Stripe
 /// payments. Newest first. A session paid through Stripe is counted once,
 /// as the Stripe payment.
 List<LedgerPayment> allPayments({
   required List<SavedAddress> clients,
   required List<ManualPayment> manual,
-  required List<ClubRegistration> registrations,
-  required Map<String, ClubDecision> clubDecisions,
+  List<LedgerPayment> club = const [],
   List<StripePayment> stripe = const [],
   Map<String, StripeDecision> stripeDecisions = const {},
 }) {
@@ -162,22 +116,7 @@ List<LedgerPayment> allPayments({
       );
     }
   }
-  for (final r in registrations) {
-    final d = clubDecisions[r.id];
-    if (d?.status != ClubStatus.paid) continue;
-    out.add(
-      LedgerPayment(
-        id: 'club:${r.id}',
-        kind: PaymentKind.club,
-        date: d!.paidOn ?? DateTime(r.at.year, r.at.month, r.at.day),
-        amount: d.amount ?? clubPrice,
-        source: IncomeSource.club,
-        from: r.name.isEmpty ? r.email : '${r.name} (${r.email})',
-        description: 'Dunn Club, signed up ${_short(r.at)}',
-        method: d.method,
-      ),
-    );
-  }
+  out.addAll(club);
   for (final p in stripe) {
     if (p.fullyRefunded) continue;
     final d = stripeDecisions[p.id];

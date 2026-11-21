@@ -22,6 +22,7 @@ import '../payments/send_bill_dialog.dart';
 import '../policy_forms/policy_forms_page.dart';
 import '../../services/jobs.dart' show formatClock, formatHours;
 import 'client_status.dart';
+import '../../widgets/refresh_all_button.dart';
 
 /// Opens [uri] in whatever app handles it, or says nothing can.
 Future<void> openClientLink(BuildContext context, Uri uri) async {
@@ -162,6 +163,7 @@ class _ClientPageState extends ConsumerState<ClientPage> {
               icon: const Icon(Icons.delete_outline),
               onPressed: () => _delete(client),
             ),
+          const RefreshAllButton(),
         ],
       ),
       // The page keeps its place; the sidebar slides out over it.

@@ -8,6 +8,7 @@ import '../../state/policy_forms_provider.dart';
 import '../../state/providers.dart';
 import '../../widgets/page_body.dart';
 import '../clients/client_status.dart';
+import '../../widgets/refresh_all_button.dart';
 
 void openPolicyForms(BuildContext context) =>
     Navigator.of(context)
@@ -254,6 +255,7 @@ class PolicyFormsPage extends ConsumerWidget {
             icon: const Icon(Icons.help_outline),
             onPressed: () => showLinkPolicyFormHelp(context),
           ),
+          const RefreshAllButton(),
         ],
       ),
       body: PageListView(

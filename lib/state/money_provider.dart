@@ -9,6 +9,7 @@ import '../services/ledger.dart';
 import '../services/local_store.dart';
 import '../services/settings_sync.dart';
 import '../services/stripe.dart';
+import 'club_provider.dart';
 import 'leads_provider.dart';
 import 'stripe_provider.dart';
 import 'providers.dart';
@@ -108,16 +109,6 @@ class ExpensesNotifier extends SyncedRecordsNotifier {
   Future<void> save(Expense e) => put(e.id, e.toJson());
 }
 
-class ClubDecisionsNotifier extends SyncedRecordsNotifier {
-  @override
-  String get prefix => 'clubreg:';
-  @override
-  String get storeKey => LocalStore.clubDecisionsKey;
-
-  Future<void> decide(String registrationId, ClubDecision d) =>
-      put(registrationId, d.toJson());
-}
-
 final manualPaymentRecordsProvider =
     NotifierProvider<ManualPaymentsNotifier, Records>(
       ManualPaymentsNotifier.new,
@@ -125,8 +116,6 @@ final manualPaymentRecordsProvider =
 final expenseRecordsProvider = NotifierProvider<ExpensesNotifier, Records>(
   ExpensesNotifier.new,
 );
-final clubDecisionRecordsProvider =
-    NotifierProvider<ClubDecisionsNotifier, Records>(ClubDecisionsNotifier.new);
 
 /// Everything above, for syncing.
 /// What each Stripe payment was for.
@@ -152,8 +141,10 @@ final stripeDecisionsProvider = Provider<Map<String, StripeDecision>>(
 final syncedRecordProviders = [
   manualPaymentRecordsProvider,
   expenseRecordsProvider,
-  clubDecisionRecordsProvider,
   stripeDecisionRecordsProvider,
+  webinarRecordsProvider,
+  memberRecordsProvider,
+  clubSeatRecordsProvider,
 ];
 
 final manualPaymentsProvider = Provider<List<ManualPayment>>(
@@ -173,22 +164,15 @@ final expensesProvider = Provider<List<Expense>>(
   ]..sort((a, b) => b.date.compareTo(a.date)),
 );
 
-final clubDecisionsProvider = Provider<Map<String, ClubDecision>>(
-  (ref) => {
-    for (final e in ref.watch(clubDecisionRecordsProvider).entries)
-      if (e.value.value case final Map<String, dynamic> v)
-        e.key: ClubDecision.fromJson(v),
-  },
-);
-
-// ------------------------------------------------------ Dunn Club sign-ups
+// ------------------------------------------------- Dunn Club interest form
 
 final clubRegistrationsProvider =
     NotifierProvider<ClubRegistrationsNotifier, List<ClubRegistration>>(
       ClubRegistrationsNotifier.new,
     );
 
-/// Sign-ups from the Dunn Club form, as last read from the spreadsheet.
+/// Responses to the Dunn Club interest form, as last read from the
+/// spreadsheet. Each new email becomes a member.
 class ClubRegistrationsNotifier extends Notifier<List<ClubRegistration>> {
   static const _key = LocalStore.clubRegistrationsKey;
 
@@ -211,15 +195,6 @@ class ClubRegistrationsNotifier extends Notifier<List<ClubRegistration>> {
 }
 
 /// Sign-ups not yet marked paid or not paid (after someone's free first).
-final clubToConfirmProvider = Provider<List<ClubRegistration>>((ref) {
-  final regs = ref.watch(clubRegistrationsProvider);
-  final decisions = ref.watch(clubDecisionsProvider);
-  return [
-    for (final r in regs)
-      if (clubStatusOf(r, regs, decisions) == ClubStatus.toConfirm) r,
-  ];
-});
-
 // ---------------------------------------------------------------- ledger
 
 /// Every payment received, newest first.
@@ -227,8 +202,7 @@ final ledgerProvider = Provider<List<LedgerPayment>>(
   (ref) => allPayments(
     clients: ref.watch(addressesProvider),
     manual: ref.watch(manualPaymentsProvider),
-    registrations: ref.watch(clubRegistrationsProvider),
-    clubDecisions: ref.watch(clubDecisionsProvider),
+    club: ref.watch(clubPaymentsProvider),
     stripe: ref.watch(stripeProvider).payments,
     stripeDecisions: ref.watch(stripeDecisionsProvider),
   ),
@@ -252,15 +226,10 @@ final allExpensesProvider = Provider<List<Expense>>(
   ],
 );
 
-/// Leads from the website form and from Dunn Club sign-ups.
+/// Leads: inquiries from the website's contact form, newest first. (Dunn
+/// Club sign-ups are members, on the Club tab.)
 final allLeadsProvider = Provider<List<Lead>>((ref) {
-  final leads = [
-    ...ref.watch(leadsProvider).leads,
-    ...clubLeads(
-      ref.watch(clubRegistrationsProvider),
-      ref.watch(addressesProvider),
-    ),
-  ];
+  final leads = [...ref.watch(leadsProvider).leads];
   leads.sort((a, b) {
     final ta = a.submittedAt;
     final tb = b.submittedAt;
