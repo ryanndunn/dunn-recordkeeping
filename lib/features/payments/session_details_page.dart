@@ -45,12 +45,17 @@ class SessionDetailsPage extends ConsumerWidget {
     // The drives during it: this device's trips, or (recorded on the
     // other device) just where it went.
     final end = s.end ?? (job != null && job.isActive ? now : s.start);
+    // Through the drive away from the last client.
+    final last = job?.lastActivity;
+    final drivesUntil = last != null && last.isAfter(end) ? last : end;
     final drives =
         job == null
               ? <Trip>[]
               : [
                   for (final t in ref.watch(tripsProvider))
-                    if (!t.date.isBefore(job.start) && !t.date.isAfter(end)) t,
+                    if (!t.date.isBefore(job.start) &&
+                        !t.date.isAfter(drivesUntil))
+                      t,
                 ]
           ..sort((a, b) => a.date.compareTo(b.date));
     final stops = job == null
@@ -172,7 +177,13 @@ class SessionDetailsPage extends ConsumerWidget {
           if (s.places.isNotEmpty) fact('Their addresses', s.places.join(', ')),
 
           heading('Driving'),
-          fact('Miles', '${s.miles.toStringAsFixed(1)} mi'),
+          fact(
+            'Miles',
+            '${s.driveMiles.toStringAsFixed(1)} mi, with the drive there '
+                'and back',
+          ),
+          if (s.otherClients.isNotEmpty)
+            fact('Between clients', '${s.miles.toStringAsFixed(1)} mi'),
           if (drives.isNotEmpty)
             for (final t in drives)
               fact(

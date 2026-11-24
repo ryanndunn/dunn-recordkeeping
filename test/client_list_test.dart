@@ -71,4 +71,22 @@ void main() {
   test('sorts by most recently changed', () {
     expect(names(ClientSort.recent), ['bob Jones', 'Jane Smith', 'Cara Lee']);
   });
+
+  test('a large property is kept on each address and when reordered', () {
+    final big = jane.withAddresses([
+      jane.allAddresses.last.copyWith(large: true),
+      jane.allAddresses.first,
+    ]);
+    expect(big.largeSite, isTrue, reason: 'the storage unit is first now');
+    expect(big.locations.single.large, isFalse);
+    expect(big.stops.first.largeSite, isTrue);
+    expect(siteRadius(big.stops.first), largeSiteMeters);
+    expect(siteRadius(big.stops.last), normalSiteMeters);
+
+    final again = SavedAddress.fromJson(big.toJson());
+    expect(again.largeSite, isTrue);
+    expect(again.allAddresses.first.large, isTrue);
+    expect(SavedAddress.fromJson(jane.toJson()).largeSite, isFalse);
+    expect(jane.toJson().containsKey('largeSite'), isFalse);
+  });
 }

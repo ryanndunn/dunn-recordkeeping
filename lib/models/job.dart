@@ -193,10 +193,21 @@ class PlaceVisit {
 /// driven. This is what syncs to the other device (which doesn't have
 /// this device's trips), so it can show the job on client pages.
 class JobSummary {
-  const JobSummary(this.job, {required this.miles, required this.stops});
+  const JobSummary(
+    this.job, {
+    required this.miles,
+    required this.stops,
+    double? driveMiles,
+  }) : driveMiles = driveMiles ?? miles;
 
   final Job job;
+
+  /// Miles driven between clients during the session.
   final double miles;
+
+  /// All the driving for it: the drive to the first client, between
+  /// clients, and the drive away from the last one.
+  final double driveMiles;
 
   /// Where each drive during the job went, in order.
   final List<Place> stops;
@@ -213,12 +224,14 @@ class JobSummary {
   Map<String, dynamic> toJson() => {
     ...job.toJson()..remove('synced'),
     'miles': miles,
+    'driveMiles': driveMiles,
     'stops': [for (final p in stops) p.toJson()],
   };
 
   factory JobSummary.fromJson(Map<String, dynamic> json) => JobSummary(
     Job.fromJson({...json, 'synced': true}),
     miles: (json['miles'] as num?)?.toDouble() ?? 0,
+    driveMiles: (json['driveMiles'] as num?)?.toDouble(),
     stops: [
       for (final p in (json['stops'] as List?) ?? const [])
         Place.fromJson(p as Map<String, dynamic>),

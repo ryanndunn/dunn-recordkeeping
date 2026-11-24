@@ -16,11 +16,12 @@ class ClientJobEntry {
     this.job,
     this.scheduled,
     this.miles = 0,
+    double? driveMiles,
     this.otherClients = const [],
     this.places = const [],
     this.timeTracked = true,
     this.withClient,
-  });
+  }) : driveMiles = driveMiles ?? miles;
 
   final ClientJobState state;
 
@@ -35,8 +36,11 @@ class ClientJobEntry {
   /// The booking, if the job was scheduled.
   final ScheduledJob? scheduled;
 
-  /// Miles driven during the job (the whole job, all stops).
+  /// Miles driven between clients during the session.
   final double miles;
+
+  /// All the driving for it, including the drive there and back.
+  final double driveMiles;
 
   /// Other clients visited in the same job.
   final List<String> otherClients;
@@ -132,6 +136,7 @@ List<ClientJobEntry> clientJobs({
             (running ? now : end).difference(job.start),
         scheduled: takeBooking(job.start),
         miles: summary.miles,
+        driveMiles: summary.driveMiles,
         otherClients: [
           for (final c in job.clients)
             if (c != client.name && !c.startsWith('${client.name} (')) c,

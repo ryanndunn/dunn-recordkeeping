@@ -14,7 +14,11 @@ import 'local_store.dart';
 const arrivalStayTime = Duration(minutes: 5);
 
 /// Geofence size. Android recommends 100–150 m for reliable detection.
-const arrivalRadiusMeters = 150.0;
+/// Clients' big properties (schools, campuses) use [largeSiteMeters].
+const arrivalRadiusMeters = normalSiteMeters;
+
+/// A watched place and how near it counts as being there.
+typedef Fence = ({Place place, double radius});
 
 const homeFenceId = 'home';
 const _addressPrefix = 'addr:';

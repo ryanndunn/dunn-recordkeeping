@@ -196,6 +196,29 @@ void main() {
       expect(jobMiles(job, await phone.trips()), 45);
     });
 
+    test(
+      'a one-client session\'s miles include the drive there and back',
+      () async {
+        final phone = await Phone.create();
+        await phone.client(clinic, morning);
+        await phone.store.setLastDeparture(
+          PlaceVisit(clinic.toPlace(), morning.add(_m(25))),
+        );
+        await phone.stop(StopKind.home, home, morning.add(_m(50)));
+        final summary = summarizeJob(
+          phone.jobs.single,
+          await phone.trips(),
+          morning.add(const Duration(hours: 8)),
+        );
+        expect(summary.miles, 0, reason: 'no driving between clients');
+        expect(summary.driveMiles, 30, reason: '15 there, 15 back');
+        final again = JobSummary.fromJson(
+          jsonDecode(jsonEncode(summary.toJson())) as Map<String, dynamic>,
+        );
+        expect(again.driveMiles, 30, reason: 'reaches the other device');
+      },
+    );
+
     test('each client gets their own time in a shared session', () async {
       final phone = await Phone.create();
       await phone.client(clinic, morning);
@@ -458,6 +481,34 @@ void main() {
 
     test('with nothing nearby the stop keeps its position', () {
       expect(classifyNearby(here, const []).place, here);
+    });
+
+    test('a stop farther off counts as a client\'s large property (a '
+        'school\'s parking lot), but not an ordinary address', () {
+      // About 250 m from the pin.
+      const parking = Place(
+        label: 'Stop',
+        address: 'x',
+        lat: 40.10225,
+        lng: -89.1,
+      );
+      expect(
+        classifyKnownPlace(
+          parking,
+          home: home,
+          clientStops: [clinic],
+          donationCenters: const [],
+        ).kind,
+        StopKind.other,
+      );
+      final school = classifyKnownPlace(
+        parking,
+        home: home,
+        clientStops: [clinic.copyWith(largeSite: true)],
+        donationCenters: const [],
+      );
+      expect(school.kind, StopKind.client);
+      expect(school.place.label, 'Clinic');
     });
 
     test('a stop near a saved place is that place', () {

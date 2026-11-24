@@ -82,6 +82,11 @@ class ScheduledJob {
 
 /// One of a client's other addresses (second home, storage unit, …),
 /// always picked from Google Maps.
+/// How near a client's map pin counts as being there, in meters: most
+/// places, and big properties (schools, campuses, parks).
+const normalSiteMeters = 150.0;
+const largeSiteMeters = 300.0;
+
 class ClientLocation {
   const ClientLocation({
     required this.id,
@@ -90,9 +95,15 @@ class ClientLocation {
     this.placeId,
     this.lat,
     this.lng,
+    this.large = false,
   });
 
   final String id;
+
+  /// A big property (a school, campus or park): the phone counts you as
+  /// there anywhere within [largeSiteMeters] of its map pin, not just
+  /// near it.
+  final bool large;
 
   /// What this place is to the client, e.g. "Storage unit".
   final String label;
@@ -101,14 +112,16 @@ class ClientLocation {
   final double? lat;
   final double? lng;
 
-  ClientLocation copyWith({String? label, Place? place}) => ClientLocation(
-    id: id,
-    label: label ?? this.label,
-    address: place?.address ?? address,
-    placeId: place == null ? placeId : place.placeId,
-    lat: place == null ? lat : place.lat,
-    lng: place == null ? lng : place.lng,
-  );
+  ClientLocation copyWith({String? label, Place? place, bool? large}) =>
+      ClientLocation(
+        id: id,
+        label: label ?? this.label,
+        address: place?.address ?? address,
+        placeId: place == null ? placeId : place.placeId,
+        lat: place == null ? lat : place.lat,
+        lng: place == null ? lng : place.lng,
+        large: large ?? this.large,
+      );
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -117,6 +130,7 @@ class ClientLocation {
     if (placeId != null) 'placeId': placeId,
     if (lat != null) 'lat': lat,
     if (lng != null) 'lng': lng,
+    if (large) 'large': true,
   };
 
   factory ClientLocation.fromJson(Map<String, dynamic> json) => ClientLocation(
@@ -126,6 +140,7 @@ class ClientLocation {
     placeId: json['placeId'] as String?,
     lat: (json['lat'] as num?)?.toDouble(),
     lng: (json['lng'] as num?)?.toDouble(),
+    large: json['large'] as bool? ?? false,
   );
 }
 
@@ -200,6 +215,7 @@ class SavedAddress {
     this.lat,
     this.lng,
     this.addressLabel = '',
+    this.largeSite = false,
     this.locations = const [],
     this.contacts = const [],
     this.contactLabel = '',
@@ -233,6 +249,9 @@ class SavedAddress {
 
   /// What the first address is (e.g. "Home"); may be empty.
   final String addressLabel;
+
+  /// The first address is a big property (see [ClientLocation.large]).
+  final bool largeSite;
 
   /// The client's other addresses. All addresses are equal in the app;
   /// the first one is kept in [address] for trips and older data.
@@ -330,6 +349,7 @@ class SavedAddress {
         placeId: l.placeId,
         lat: l.lat,
         lng: l.lng,
+        largeSite: l.large,
       ),
   ];
 
@@ -343,6 +363,7 @@ class SavedAddress {
       placeId: placeId,
       lat: lat,
       lng: lng,
+      large: largeSite,
     ),
     ...locations,
   ];
@@ -363,6 +384,7 @@ class SavedAddress {
       lat: first.lat,
       lng: first.lng,
       addressLabel: first.label,
+      largeSite: first.large,
       locations: addresses.skip(1).toList(),
       contacts: contacts,
       contactLabel: contactLabel,
@@ -387,6 +409,7 @@ class SavedAddress {
     double? lat,
     double? lng,
     String? addressLabel,
+    bool? largeSite,
     List<ClientLocation>? locations,
     List<ClientContact>? contacts,
     String? contactLabel,
@@ -411,6 +434,7 @@ class SavedAddress {
     lat: lat ?? this.lat,
     lng: lng ?? this.lng,
     addressLabel: addressLabel ?? this.addressLabel,
+    largeSite: largeSite ?? this.largeSite,
     locations: locations ?? this.locations,
     contacts: contacts ?? this.contacts,
     contactLabel: contactLabel ?? this.contactLabel,
@@ -441,6 +465,7 @@ class SavedAddress {
     if (lat != null) 'lat': lat,
     if (lng != null) 'lng': lng,
     if (addressLabel.isNotEmpty) 'addressLabel': addressLabel,
+    if (largeSite) 'largeSite': true,
     if (locations.isNotEmpty)
       'locations': [for (final l in locations) l.toJson()],
     if (contacts.isNotEmpty) 'contacts': [for (final c in contacts) c.toJson()],
@@ -473,6 +498,7 @@ class SavedAddress {
     lat: (json['lat'] as num?)?.toDouble(),
     lng: (json['lng'] as num?)?.toDouble(),
     addressLabel: json['addressLabel'] as String? ?? '',
+    largeSite: json['largeSite'] as bool? ?? false,
     locations: [
       for (final l in (json['locations'] as List?) ?? const [])
         ClientLocation.fromJson(l as Map<String, dynamic>),
@@ -524,3 +550,7 @@ String _localIso(DateTime d) {
   final l = d.isUtc ? d.toLocal() : d;
   return '${_dateOnly(l)}T${_two(l.hour)}:${_two(l.minute)}:00';
 }
+
+/// How near [stop] (a client address) counts as being there.
+double siteRadius(SavedAddress stop) =>
+    stop.largeSite ? largeSiteMeters : normalSiteMeters;

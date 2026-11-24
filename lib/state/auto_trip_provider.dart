@@ -7,7 +7,6 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../background/arrival_handler.dart';
 import '../background/job_watcher.dart';
-import '../models/place.dart';
 import '../models/saved_address.dart';
 import '../services/auto_trip.dart';
 import 'providers.dart';
@@ -20,8 +19,9 @@ abstract class GeofencePlatform {
   /// battery prompts. Returns whether background location was granted.
   Future<bool> requestPermissions();
 
-  /// Replaces all registered geofences with [fences].
-  Future<void> setFences(Map<String, Place> fences);
+  /// Replaces all registered geofences with [fences] (each a place and
+  /// how near it counts as being there).
+  Future<void> setFences(Map<String, Fence> fences);
 
   Future<void> clearFences();
 }
@@ -50,15 +50,18 @@ class AndroidGeofencePlatform implements GeofencePlatform {
   }
 
   @override
-  Future<void> setFences(Map<String, Place> fences) async {
+  Future<void> setFences(Map<String, Fence> fences) async {
     await _init();
     await NativeGeofenceManager.instance.removeAllGeofences();
     for (final e in fences.entries) {
       await NativeGeofenceManager.instance.createGeofence(
         Geofence(
           id: e.key,
-          location: Location(latitude: e.value.lat!, longitude: e.value.lng!),
-          radiusMeters: arrivalRadiusMeters,
+          location: Location(
+            latitude: e.value.place.lat!,
+            longitude: e.value.place.lng!,
+          ),
+          radiusMeters: e.value.radius,
           // Staying 5 minutes is an arrival; leaving starts the job clock
           // if the next stop is a client.
           triggers: {GeofenceEvent.dwell, GeofenceEvent.exit},
@@ -157,13 +160,13 @@ class AutoTripNotifier extends Notifier<AutoTripState> {
 
   /// The places to watch: home, every client address and every donation
   /// center with a position.
-  ({Map<String, Place> fences, int skipped}) _desiredFences() {
-    final fences = <String, Place>{};
+  ({Map<String, Fence> fences, int skipped}) _desiredFences() {
+    final fences = <String, Fence>{};
     var skipped = 0;
     final home = ref.read(settingsProvider).home;
     if (home != null) {
       if (home.hasCoordinates) {
-        fences[homeFenceId] = home;
+        fences[homeFenceId] = (place: home, radius: arrivalRadiusMeters);
       } else {
         skipped++;
       }
@@ -171,7 +174,7 @@ class AutoTripNotifier extends Notifier<AutoTripState> {
     for (final a in clientStops(ref.read(addressesProvider))) {
       final place = a.toPlace();
       if (place.hasCoordinates) {
-        fences[addressFenceId(a.id)] = place;
+        fences[addressFenceId(a.id)] = (place: place, radius: siteRadius(a));
       } else {
         skipped++;
       }
@@ -179,7 +182,10 @@ class AutoTripNotifier extends Notifier<AutoTripState> {
     for (final d in ref.read(donationCentersProvider)) {
       final place = d.toPlace();
       if (place.hasCoordinates) {
-        fences[donationFenceId(d.id)] = place;
+        fences[donationFenceId(d.id)] = (
+          place: place,
+          radius: arrivalRadiusMeters,
+        );
       } else {
         skipped++;
       }

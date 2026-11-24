@@ -535,6 +535,9 @@ void main() {
     // Removing the address keeps the trip.
     await tester.tap(find.byTooltip('Edit Storage unit'));
     await tester.pumpAndSettle();
+    expect(find.text('Large property'), findsOneWidget);
+    await tester.ensureVisible(find.byTooltip('Remove this address'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Remove this address'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Remove'));

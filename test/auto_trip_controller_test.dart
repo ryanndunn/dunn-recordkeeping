@@ -14,7 +14,7 @@ import 'fakes.dart';
 class FakeGeofences implements GeofencePlatform {
   bool granted = true;
   bool hasPermission = false;
-  Map<String, Place> fences = {};
+  Map<String, Fence> fences = {};
   int requests = 0;
 
   @override
@@ -28,7 +28,7 @@ class FakeGeofences implements GeofencePlatform {
   }
 
   @override
-  Future<void> setFences(Map<String, Place> f) async => fences = {...f};
+  Future<void> setFences(Map<String, Fence> f) async => fences = {...f};
 
   @override
   Future<void> clearFences() async => fences = {};
@@ -98,7 +98,9 @@ void main() {
         expect(state.watching, 2);
         expect(state.skipped, 1, reason: 'no map position to watch');
         expect(geofences.fences.keys, contains(homeFenceId));
-        expect(geofences.fences.values, contains(clinic));
+        expect([
+          for (final f in geofences.fences.values) f.place,
+        ], contains(clinic));
         expect(app.read(localStoreProvider).autoTripsEnabled, isTrue);
       },
     );
@@ -124,18 +126,24 @@ void main() {
               locations: const [
                 ClientLocation(
                   id: 's',
-                  label: 'Storage unit',
+                  label: 'School',
                   address: '8 Depot Rd',
                   placeId: 'ps',
                   lat: 40.1,
                   lng: -89.1,
+                  large: true,
                 ),
               ],
             ),
           );
       await Future<void>.delayed(Duration.zero);
       expect(geofences.fences, hasLength(3));
-      expect(geofences.fences.keys, contains(addressFenceId('${client.id}/s')));
+      final school = geofences.fences[addressFenceId('${client.id}/s')];
+      expect(school?.radius, largeSiteMeters, reason: 'a large property');
+      expect(
+        geofences.fences[addressFenceId(client.id)]?.radius,
+        normalSiteMeters,
+      );
     });
 
     test(

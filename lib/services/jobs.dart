@@ -275,18 +275,19 @@ double jobMiles(Job job, List<Trip> trips) {
   required List<SavedAddress> donationCenters,
   double radiusMeters = 150,
 }) {
-  bool near(Place a, Place b) {
+  bool near(Place a, Place b, [double? within]) {
     if (isSamePlace(a, b)) return true;
     if (!a.hasCoordinates || !b.hasCoordinates) return false;
     return AddressMatcher.distanceMeters(a.lat!, a.lng!, b.lat!, b.lng!) <=
-        radiusMeters;
+        (within ?? radiusMeters);
   }
 
   if (home != null && near(place, home)) {
     return (kind: StopKind.home, place: home);
   }
   for (final c in clientStops) {
-    if (near(place, c.toPlace())) {
+    // A big property (a school) counts from farther away.
+    if (near(place, c.toPlace(), c.largeSite ? largeSiteMeters : null)) {
       return (kind: StopKind.client, place: c.toPlace());
     }
   }
@@ -354,9 +355,20 @@ JobSummary summarizeJob(Job job, List<Trip> trips, DateTime now) {
     for (final t in trips)
       if (!t.date.isBefore(job.start) && !t.date.isAfter(end)) t,
   ]..sort((a, b) => a.date.compareTo(b.date));
+  // The drive there arrives as it starts; the drive away from the last
+  // client arrives at the stop that ended it (its last activity).
+  final last = job.lastActivity;
+  final until = last != null && last.isAfter(end) ? last : end;
+  var drive = 0.0;
+  for (final t in trips) {
+    if (!t.date.isBefore(job.start) && !t.date.isAfter(until)) {
+      drive += t.miles;
+    }
+  }
   return JobSummary(
     job,
     miles: jobMiles(job.copyWith(end: end), trips),
     stops: [for (final t in during) t.to],
+    driveMiles: (drive * 10).round() / 10,
   );
 }

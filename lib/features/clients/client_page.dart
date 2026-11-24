@@ -514,7 +514,7 @@ class _ClientDetails extends ConsumerWidget {
               const Divider(height: 1),
               _AddLocation(
                 key: ValueKey('add-location-${c.id}'),
-                onAdd: (label, place) => saveAddresses(
+                onAdd: (label, place, large) => saveAddresses(
                   (all) => [
                     ...all,
                     ClientLocation(
@@ -524,6 +524,7 @@ class _ClientDetails extends ConsumerWidget {
                       placeId: place.placeId,
                       lat: place.lat,
                       lng: place.lng,
+                      large: large,
                     ),
                   ],
                 ),
@@ -1593,9 +1594,11 @@ class _LocationRowState extends State<_LocationRow> {
       return _LocationEditor(
         initial: l,
         onCancel: () => setState(() => _editing = false),
-        onSave: (label, place) async {
+        onSave: (label, place, large) async {
           setState(() => _editing = false);
-          await widget.onSave(l.copyWith(label: label, place: place));
+          await widget.onSave(
+            l.copyWith(label: label, place: place, large: large),
+          );
         },
         onRemove: widget.onRemove == null
             ? null
@@ -1618,6 +1621,7 @@ class _LocationRowState extends State<_LocationRow> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(l.address),
+          if (l.large) const Text('Large property: counted within ~1,000 ft'),
           if (!verified)
             Text(
               'Not verified. Tap to pick it from Google Maps.',
@@ -1649,7 +1653,7 @@ class _LocationRowState extends State<_LocationRow> {
 class _AddLocation extends StatefulWidget {
   const _AddLocation({super.key, required this.onAdd});
 
-  final Future<void> Function(String label, Place place) onAdd;
+  final Future<void> Function(String label, Place place, bool large) onAdd;
 
   @override
   State<_AddLocation> createState() => _AddLocationState();
@@ -1663,9 +1667,9 @@ class _AddLocationState extends State<_AddLocation> {
     if (_adding) {
       return _LocationEditor(
         onCancel: () => setState(() => _adding = false),
-        onSave: (label, place) async {
+        onSave: (label, place, large) async {
           setState(() => _adding = false);
-          await widget.onAdd(label, place);
+          await widget.onAdd(label, place, large);
         },
       );
     }
@@ -1695,7 +1699,7 @@ class _LocationEditor extends StatefulWidget {
   });
 
   final ClientLocation? initial;
-  final Future<void> Function(String label, Place place) onSave;
+  final Future<void> Function(String label, Place place, bool large) onSave;
   final VoidCallback onCancel;
   final Future<void> Function()? onRemove;
 
@@ -1715,6 +1719,8 @@ class _LocationEditorState extends State<_LocationEditor> {
           lat: widget.initial!.lat,
           lng: widget.initial!.lng,
         );
+
+  late bool _large = widget.initial?.large ?? false;
 
   @override
   void dispose() {
@@ -1799,7 +1805,16 @@ class _LocationEditorState extends State<_LocationEditor> {
               ],
             ),
           ],
-          const SizedBox(height: 4),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _large,
+            onChanged: (v) => setState(() => _large = v),
+            title: const Text('Large property'),
+            subtitle: const Text(
+              'A school, campus or park. You\'re counted as there anywhere '
+              'within about 1,000 ft of it, not just near the address.',
+            ),
+          ),
           Row(
             children: [
               if (widget.onRemove != null)
@@ -1817,7 +1832,7 @@ class _LocationEditorState extends State<_LocationEditor> {
               const SizedBox(width: 8),
               FilledButton(
                 onPressed: _ready
-                    ? () => widget.onSave(_label.text.trim(), _picked!)
+                    ? () => widget.onSave(_label.text.trim(), _picked!, _large)
                     : null,
                 child: Text(widget.initial == null ? 'Add' : 'Save'),
               ),
@@ -2153,7 +2168,7 @@ class _JobsSectionState extends State<_JobsSection> {
       lines = [
         _timeAndAmount(e),
         [
-          if (e.miles > 0) '${_miles(e.miles)} between clients',
+          if (e.driveMiles > 0) '${_miles(e.driveMiles)} driven',
           ..._extras(e),
         ].join(' · '),
         if (e.scheduled?.end != null)
