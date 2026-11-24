@@ -175,8 +175,6 @@ Future<void> handleStop(StopKind kind, Place place, DateTime arrivedAt) async {
   }
 
   await _notify(
-    trip,
-    needsMiles: outcome.needsMiles,
     started: outcome.startedJob,
     ended: outcome.endedJob,
     jobUploaded: jobUploaded,
@@ -250,46 +248,72 @@ class _BearerClient extends http.BaseClient {
 }
 
 const _channel = AndroidNotificationDetails(
-  'auto_trips',
-  'Automatic trips',
-  channelDescription: 'Shown when a trip is logged automatically',
+  'sessions',
+  'Sessions',
+  channelDescription: 'Shown when a session starts or ends',
   importance: Importance.defaultImportance,
 );
 
-Future<void> _notify(
-  Trip trip, {
-  required bool needsMiles,
+/// Tells you a session started or ended (nothing for other trips: they're
+/// logged quietly).
+Future<void> _notify({
   Job? started,
   Job? ended,
   bool jobUploaded = false,
 }) async {
+  final notice = sessionNotice(
+    started: started,
+    ended: ended,
+    jobUploaded: jobUploaded,
+  );
+  if (notice == null) return;
   final plugin = FlutterLocalNotificationsPlugin();
   await plugin.initialize(
     settings: const InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     ),
   );
-  final route = '${trip.from.label} → ${trip.to.label}';
-  final miles = needsMiles
-      ? 'Miles will be added when you\'re back online.'
-      : '${trip.miles.toStringAsFixed(1)} mi'
-            '${trip.estimated ? ' (estimate)' : ''}'
-            '${trip.synced ? ' · added to your spreadsheet' : ''}';
-  final job = started != null && ended != null
-      ? 'Previous session ended ${formatClock(ended.end!)}. New session '
-            'started ${formatClock(started.start)}.'
-      : started != null
-      ? 'Session started ${formatClock(started.start)}. Watching for stops.'
-      : ended != null
-      ? 'Session ended after ${formatHours(ended.duration)}'
-            '${jobUploaded ? ' · added to your spreadsheet' : ''}.'
-      : null;
   await plugin.show(
-    id: trip.id.hashCode & 0x7fffffff,
-    title: 'Trip logged: $route',
-    body: job == null ? miles : '$miles\n$job',
+    id: (started ?? ended)!.id.hashCode & 0x7fffffff,
+    title: notice.title,
+    body: notice.body,
     notificationDetails: const NotificationDetails(android: _channel),
   );
+}
+
+/// The notification for a session starting or ending, or null if neither
+/// happened.
+({String title, String body})? sessionNotice({
+  Job? started,
+  Job? ended,
+  bool jobUploaded = false,
+}) {
+  String who(Job j) => j.clients.isEmpty ? '' : ' at ${j.clients.join(', ')}';
+  String endedText(Job j) =>
+      'ended ${formatClock(j.end ?? j.start)} after '
+      '${formatHours((j.end ?? j.start).difference(j.start))}';
+  final saved = jobUploaded ? ' Added to your spreadsheet.' : '';
+  if (started != null && ended != null) {
+    return (
+      title: 'New session${who(started)}',
+      body:
+          'Started ${formatClock(started.start)}. The session${who(ended)} '
+          '${endedText(ended)}.$saved',
+    );
+  }
+  if (started != null) {
+    return (
+      title: 'Session started${who(started)}',
+      body: 'Started ${formatClock(started.start)}. Watching for stops.',
+    );
+  }
+  if (ended != null) {
+    return (
+      title: 'Session ended${who(ended)}',
+      body: 'The session ${endedText(ended)}.$saved',
+    );
+  }
+  return null;
 }
 
 /// One line for the tracking log about a stop and what it did.

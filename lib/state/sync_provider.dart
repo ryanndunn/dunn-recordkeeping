@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:io' show Platform;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/oauth_config.dart';
@@ -67,14 +67,31 @@ enum SyncPhase {
 }
 
 class SyncState {
-  const SyncState(this.phase, {this.email, this.lastSynced, this.message});
+  const SyncState(
+    this.phase, {
+    this.email,
+    this.lastSynced,
+    this.message,
+    this.expired = false,
+  });
 
   final SyncPhase phase;
   final String? email;
   final DateTime? lastSynced;
   final String? message;
 
+  /// Google no longer accepts this device's sign-in (it expired or was
+  /// revoked): nothing syncs until you sign in again.
+  final bool expired;
+
   bool get signedIn => email != null;
+}
+
+/// Google's answer when a saved sign-in can't be used any more (e.g. a
+/// week after signing in, while the app's Google project is in testing).
+bool isExpiredSignIn(Object e) {
+  final text = '$e';
+  return text.contains('invalid_grant') || text.contains('expired or revoked');
 }
 
 final syncProvider = NotifierProvider<SyncNotifier, SyncState>(
@@ -100,13 +117,44 @@ class SyncNotifier extends Notifier<SyncState> {
 
   GoogleAccountService? get _account => ref.read(googleAccountServiceProvider);
 
-  /// At startup: sign back in silently if possible, then sync.
+  bool _restoring = false;
+
+  /// At startup (and whenever this device should be signed in but isn't):
+  /// sign back in without asking if possible, then sync. If that doesn't
+  /// work for an account used here before, say so, rather than quietly
+  /// not syncing.
   Future<void> restore() async {
     final account = _account;
-    if (account == null || _session != null) return;
-    final session = await account.restore();
-    if (session == null) return;
-    await _connect(session);
+    if (account == null || _session != null || _restoring) return;
+    _restoring = true;
+    try {
+      GoogleSession? session;
+      try {
+        // Android may need to show a prompt, which it can't while the
+        // phone is locked; don't wait on it forever.
+        session = await account.restore().timeout(const Duration(seconds: 45));
+      } catch (e) {
+        debugPrint('Dunn Record Keeping: signing back in failed: $e');
+      }
+      if (session == null) {
+        final remembered = ref.read(localStoreProvider).googleEmail;
+        if (remembered != null) {
+          state = SyncState(
+            SyncPhase.error,
+            email: remembered,
+            lastSynced: state.lastSynced,
+            expired: true,
+            message:
+                'This device isn\'t signed in to Google any more, so nothing '
+                'is syncing. Sign in again.',
+          );
+        }
+        return;
+      }
+      await _connect(session);
+    } finally {
+      _restoring = false;
+    }
   }
 
   Future<void> signIn() async {
@@ -184,9 +232,14 @@ class SyncNotifier extends Notifier<SyncState> {
     _debounce = Timer(const Duration(milliseconds: 800), () => syncNow());
   }
 
-  /// Pull newer settings from the other device and push ours.
+  /// Pull newer settings from the other device and push ours. Not
+  /// signed in, but was before: tries signing back in first.
   Future<void> syncNow() {
-    if (_remote == null) return Future.value();
+    if (_remote == null) {
+      return ref.read(localStoreProvider).googleEmail == null
+          ? Future.value()
+          : restore();
+    }
     if (_running != null) {
       _again = true;
       return _running!;
@@ -353,11 +406,17 @@ class SyncNotifier extends Notifier<SyncState> {
             : 'Trips not uploaded yet: $sheetError',
       );
     } catch (e) {
+      debugPrint('Dunn Record Keeping: sync failed: $e');
+      final expired = isExpiredSignIn(e);
       state = SyncState(
         SyncPhase.error,
         email: email,
         lastSynced: state.lastSynced,
-        message: 'Couldn\'t sync settings: $e',
+        expired: expired,
+        message: expired
+            ? 'Google sign-in on this device has expired, so nothing is '
+                  'syncing. Sign in again.'
+            : 'Couldn\'t sync settings: $e',
       );
     }
   }

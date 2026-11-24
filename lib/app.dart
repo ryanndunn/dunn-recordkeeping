@@ -38,6 +38,47 @@ class MileageApp extends StatelessWidget {
   }
 }
 
+/// Shown at the top of every page while this device's Google sign-in has
+/// expired or couldn't be restored, since nothing syncs until you sign in
+/// again.
+class SignInExpiredBanner extends ConsumerWidget {
+  const SignInExpiredBanner({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sync = ref.watch(syncProvider);
+    if (!sync.expired) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.errorContainer,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+          child: Row(
+            children: [
+              Icon(Icons.sync_problem, color: scheme.onErrorContainer),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'This device isn\'t signed in to Google, so nothing is '
+                  'syncing with your other device. Sign in again.',
+                  style: TextStyle(color: scheme.onErrorContainer),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: () => ref.read(syncProvider.notifier).signIn(),
+                child: const Text('Sign in'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key});
 
@@ -153,17 +194,24 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         onPopInvokedWithResult: (didPop, _) {
           if (!didPop) _back();
         },
-        child: IndexedStack(
-          index: _index,
+        child: Column(
           children: [
-            for (var i = 0; i < _pages.length; i++)
-              HeroControllerScope.none(
-                child: Navigator(
-                  key: _tabs[i],
-                  onGenerateRoute: (_) =>
-                      MaterialPageRoute<void>(builder: (_) => _pages[i]),
-                ),
+            const SignInExpiredBanner(),
+            Expanded(
+              child: IndexedStack(
+                index: _index,
+                children: [
+                  for (var i = 0; i < _pages.length; i++)
+                    HeroControllerScope.none(
+                      child: Navigator(
+                        key: _tabs[i],
+                        onGenerateRoute: (_) =>
+                            MaterialPageRoute<void>(builder: (_) => _pages[i]),
+                      ),
+                    ),
+                ],
               ),
+            ),
           ],
         ),
       ),

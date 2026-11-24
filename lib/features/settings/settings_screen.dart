@@ -322,6 +322,17 @@ class _GoogleAccountSection extends ConsumerWidget {
       case SyncPhase.ready:
       case SyncPhase.error:
         final failed = sync.phase == SyncPhase.error;
+        if (sync.expired) {
+          return ListTile(
+            leading: Icon(Icons.sync_problem, color: scheme.error),
+            title: Text(sync.email ?? 'Google account'),
+            subtitle: Text(sync.message ?? ''),
+            trailing: FilledButton(
+              onPressed: notifier.signIn,
+              child: const Text('Sign in again'),
+            ),
+          );
+        }
         if (!sync.signedIn && failed) {
           return ListTile(
             leading: Icon(Icons.error_outline, color: scheme.error),

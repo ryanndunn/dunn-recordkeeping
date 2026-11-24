@@ -1090,6 +1090,17 @@ void main() {
     );
     expect(find.textContaining('Zelle · paid'), findsOneWidget);
 
+    // The session's full details.
+    await tester.tap(find.byTooltip('Session details'));
+    await tester.pumpAndSettle();
+    expect(find.text('Session details'), findsOneWidget);
+    expect(find.text('9:00 AM – 12:00 PM'), findsOneWidget, reason: 'booked');
+    expect(find.text('Zelle'), findsOneWidget);
+    expect(find.text('Paid on'), findsOneWidget);
+    expect(find.text('Edit billing'), findsOneWidget);
+    expect(find.text('Send bill'), findsNothing, reason: 'already paid');
+    await goBack(tester);
+
     await tester.tap(find.textContaining('Payments ('));
     await tester.pumpAndSettle();
     expect(find.text('Session 11/10/26'), findsOneWidget);

@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../state/providers.dart';
 import '../state/refresh_all.dart';
 
 /// Refreshes everything (see [RefreshAllNotifier.run]). Shown at the top
@@ -26,8 +27,27 @@ class RefreshAllButton extends ConsumerWidget {
       onPressed: running
           ? null
           : () async {
+              final messenger = ScaffoldMessenger.of(context);
               await ref.read(refreshAllProvider.notifier).run();
               onDone?.call();
+              // Say when syncing didn't work, rather than look refreshed.
+              final sync = ref.read(syncProvider);
+              final problem = switch (sync.phase) {
+                SyncPhase.error => sync.message,
+                SyncPhase.signedOut =>
+                  'Not signed in to Google, so nothing syncs with your other '
+                      'device. Sign in from Settings.',
+                _ => null,
+              };
+              if (problem != null) {
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(problem),
+                    duration: const Duration(seconds: 8),
+                    showCloseIcon: true,
+                  ),
+                );
+              }
             },
     );
   }

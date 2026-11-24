@@ -39,9 +39,14 @@ class FakeRemote implements SettingsRemote {
   SyncDoc? stored;
   int writes = 0;
 
+  /// Thrown by the next reads (e.g. an expired sign-in).
+  Object? failWith;
+
   @override
-  Future<SyncDoc?> read() async =>
-      stored == null ? null : decodeDoc(encodeDoc(stored!));
+  Future<SyncDoc?> read() async {
+    if (failWith case final e?) throw e;
+    return stored == null ? null : decodeDoc(encodeDoc(stored!));
+  }
 
   @override
   Future<void> write(SyncDoc doc) async {
@@ -1472,6 +1477,71 @@ void main() {
         );
       },
     );
+  });
+
+  test(
+    'an expired Google sign-in says so, and signing in again fixes it',
+    () async {
+      final remote = FakeRemote();
+      final account = FakeAccount();
+      final mac = await device(
+        remote,
+        clock: () => DateTime(2026, 11, 23, 9),
+        account: account,
+      );
+      await mac.read(syncProvider.notifier).signIn();
+      expect(mac.read(syncProvider).expired, isFalse);
+
+      remote.failWith = Exception(
+        'Failed to obtain access credentials. Error: invalid_grant Token has '
+        'been expired or revoked. Status code: 400',
+      );
+      await mac.read(syncProvider.notifier).syncNow();
+      final s = mac.read(syncProvider);
+      expect(s.phase, SyncPhase.error);
+      expect(s.expired, isTrue);
+      expect(s.message, contains('Sign in again'));
+
+      remote.failWith = null;
+      await mac.read(syncProvider.notifier).signIn();
+      expect(mac.read(syncProvider).expired, isFalse);
+      expect(mac.read(syncProvider).phase, SyncPhase.ready);
+    },
+  );
+
+  test('a device that can\'t sign back in says so, and tries again on the '
+      'next sync (e.g. when the app comes back to the front)', () async {
+    final account = FakeAccount();
+    final phone = await device(
+      FakeRemote(),
+      clock: () => DateTime(2026, 11, 23, 9),
+      account: account,
+    );
+    // Signed in here before, but Google wants a prompt it couldn't show.
+    await phone.read(localStoreProvider).setGoogleEmail('me@example.com');
+    await phone.read(syncProvider.notifier).restore();
+    var s = phone.read(syncProvider);
+    expect(s.expired, isTrue);
+    expect(s.message, contains('Sign in again'));
+
+    // Back in the app, Google can sign in quietly again.
+    account.signedIn = true;
+    await phone.read(syncProvider.notifier).syncNow();
+    s = phone.read(syncProvider);
+    expect(s.expired, isFalse);
+    expect(s.phase, SyncPhase.ready);
+  });
+
+  test('a device never signed in stays quietly signed out', () async {
+    final phone = await device(
+      FakeRemote(),
+      clock: () => DateTime(2026, 11, 23, 9),
+      account: FakeAccount(),
+    );
+    await phone.read(syncProvider.notifier).restore();
+    await phone.read(syncProvider.notifier).syncNow();
+    expect(phone.read(syncProvider).phase, SyncPhase.signedOut);
+    expect(phone.read(syncProvider).expired, isFalse);
   });
 
   group('switching Google account', () {

@@ -18,6 +18,7 @@ import '../clients/client_status.dart';
 import '../../services/club.dart' show parseSeatKey;
 import '../club/webinar_page.dart';
 import 'send_bill_dialog.dart';
+import 'session_details_page.dart';
 import 'stripe_page.dart';
 import '../../widgets/refresh_all_button.dart';
 
@@ -265,6 +266,11 @@ class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
                   builder: (_) => ClientPage(clientId: r.client.id),
                 ),
               ),
+              onDetails: (r) => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => SessionDetailsPage(row: r),
+                ),
+              ),
             )
           else if (_expenses)
             _ExpenseTable(
@@ -474,6 +480,7 @@ class _SessionsView extends StatelessWidget {
     required this.onTap,
     required this.onSendBill,
     required this.onOpenClient,
+    required this.onDetails,
   });
 
   final List<SessionRow> toBill;
@@ -483,6 +490,7 @@ class _SessionsView extends StatelessWidget {
   final void Function(SessionRow r) onTap;
   final void Function(SessionRow r) onSendBill;
   final void Function(SessionRow r) onOpenClient;
+  final void Function(SessionRow r) onDetails;
 
   /// "3 · $750" (and how many have no amount yet).
   static String _sum(List<SessionRow> rows) {
@@ -573,9 +581,17 @@ class _SessionsView extends StatelessWidget {
                     ],
                     onTap: () => onTap(r),
                     onName: () => onOpenClient(r),
-                    action: r.status == BillingStatus.paid
-                        ? null
-                        : TextButton.icon(
+                    action: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Session details',
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.info_outline, size: 20),
+                          onPressed: () => onDetails(r),
+                        ),
+                        if (r.status != BillingStatus.paid)
+                          TextButton.icon(
                             style: TextButton.styleFrom(
                               visualDensity: VisualDensity.compact,
                             ),
@@ -587,6 +603,8 @@ class _SessionsView extends StatelessWidget {
                             ),
                             onPressed: () => onSendBill(r),
                           ),
+                      ],
+                    ),
                   ),
               ],
             ),
